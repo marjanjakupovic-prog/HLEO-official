@@ -1,0 +1,2751 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HLEO — Clinical Research</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand:   { 400:'#60a5fa', 500:'#3b82f6', 600:'#2563eb', 700:'#1d4ed8' },
+            surface: { dark:'#0d1117', card:'#161b22', border:'#21262d', hover:'#1c2128' },
+          },
+          animation: {
+            'fade-in':  'fadeIn .25s ease-out',
+            'slide-up': 'slideUp .3s ease-out',
+          },
+          keyframes: {
+            fadeIn:  { from:{opacity:0}, to:{opacity:1} },
+            slideUp: { from:{opacity:0,transform:'translateY(10px)'}, to:{opacity:1,transform:'translateY(0)'} },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family:-apple-system, BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; }
+    :root { color-scheme:dark; }
+    html.light { color-scheme:light; }
+    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+    html.light ::-webkit-scrollbar-thumb { background:#cbd5e1; }
+    .search-ring:focus-within { box-shadow:0 0 0 3px rgba(59,130,246,.3); }
+    .result-card { transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease; }
+    .result-card:hover { transform:translateY(-2px); }
+    html.dark  .result-card:hover { box-shadow:0 8px 28px rgba(0,0,0,.5); border-color:#3b82f6; }
+    html.light .result-card:hover { box-shadow:0 8px 28px rgba(0,0,0,.08); border-color:#3b82f6; }
+    .skeleton { background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.08) 50%,rgba(255,255,255,.04) 75%); background-size:200% 100%; animation:shimmer 1.4s infinite; }
+    html.light .skeleton { background:linear-gradient(90deg,rgba(0,0,0,.06) 25%,rgba(0,0,0,.1) 50%,rgba(0,0,0,.06) 75%); background-size:200% 100%; }
+    @keyframes shimmer { to{background-position:-200% 0;} }
+    .filter-btn { display:inline-flex; align-items:center; padding:.3rem .75rem; font-size:.75rem; font-weight:500; border-radius:9999px; border:1px solid; cursor:pointer; transition:all .15s; }
+    html.dark  .filter-btn { border-color:#30363d; color:#8b949e; background:transparent; }
+    html.dark  .filter-btn:hover:not(.active) { background:#21262d; color:#e6edf3; }
+    html.light .filter-btn { border-color:#e2e8f0; color:#64748b; background:transparent; }
+    html.light .filter-btn:hover:not(.active) { background:#f1f5f9; color:#1e293b; }
+    .filter-btn.active { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+    details > summary { cursor:pointer; list-style:none; }
+    details > summary::-webkit-details-marker { display:none; }
+    details[open] .chev { transform:rotate(180deg); }
+    .chev { transition:transform .2s; display:inline-block; }
+    /* nav tab */
+    .nav-tab { display:flex; align-items:center; gap:.4rem; padding:.5rem .85rem; font-size:.8rem; font-weight:500; border-radius:.5rem; cursor:pointer; transition:all .15s; }
+    html.dark  .nav-tab { color:#8b949e; }
+    html.dark  .nav-tab:hover { background:#21262d; color:#e6edf3; }
+    html.light .nav-tab { color:#64748b; }
+    html.light .nav-tab:hover { background:#f1f5f9; color:#1e293b; }
+    .nav-tab.active { background:#3b82f6; color:#fff; }
+    /* chat bubbles */
+    .bubble-user { background:#3b82f6; color:#fff; border-radius:1rem 1rem .25rem 1rem; }
+    html.dark  .bubble-asst { background:#161b22; color:#e6edf3; border:1px solid #21262d; border-radius:1rem 1rem 1rem .25rem; }
+    html.light .bubble-asst { background:#f8fafc; color:#1e293b; border:1px solid #e2e8f0; border-radius:1rem 1rem 1rem .25rem; }
+    .profile-label { font-size:.65rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+    /* Clinical profile card sections */
+    .cp-section { padding:.75rem 0; }
+    .cp-section + .cp-section { border-top:1px solid; }
+    html.dark  .cp-section + .cp-section { border-color:#21262d; }
+    html.light .cp-section + .cp-section { border-color:#f1f5f9; }
+    .cp-section-label { display:flex; align-items:center; gap:.35rem; font-size:.68rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; margin-bottom:.5rem; }
+    html.dark  .cp-section-label { color:#4b5563; }
+    html.light .cp-section-label { color:#94a3b8; }
+    /* Tag chips for clinical fields */
+    .cp-chip { display:inline-flex; align-items:center; padding:.2rem .6rem; border-radius:.375rem; font-size:.72rem; font-weight:500; line-height:1.4; white-space:normal; word-break:break-word; }
+    .cp-chip-diag    { background:rgba(59,130,246,.1);  color:#60a5fa; }
+    .cp-chip-treat   { background:rgba(139,92,246,.12); color:#a78bfa; }
+    .cp-chip-out     { background:rgba(16,185,129,.12); color:#34d399; }
+    .cp-chip-ae      { background:rgba(245,158,11,.12); color:#fbbf24; }
+    .cp-chip-lab     { background:rgba(99,102,241,.12); color:#818cf8; }
+    .cp-chip-stage   { background:rgba(236,72,153,.12); color:#f472b6; }
+    html.light .cp-chip-diag  { background:rgba(59,130,246,.08);  color:#1d4ed8; }
+    html.light .cp-chip-treat { background:rgba(139,92,246,.08); color:#7c3aed; }
+    html.light .cp-chip-out   { background:rgba(16,185,129,.1);  color:#059669; }
+    html.light .cp-chip-ae    { background:rgba(245,158,11,.1);  color:#b45309; }
+    html.light .cp-chip-lab   { background:rgba(99,102,241,.1);  color:#4338ca; }
+    html.light .cp-chip-stage { background:rgba(236,72,153,.1);  color:#be185d; }
+    /* Dose badge paired with treatment */
+    .cp-dose { display:inline-flex; align-items:center; padding:.1rem .45rem; border-radius:.25rem; font-size:.65rem; font-weight:600; font-family:ui-monospace,monospace; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); }
+    html.light .cp-dose { background:rgba(0,0,0,.04); border-color:rgba(0,0,0,.07); }
+    /* Evidence level badge */
+    .ev-badge { display:inline-flex; align-items:center; gap:.35rem; padding:.25rem .65rem; border-radius:.5rem; font-size:.72rem; font-weight:600; border:1px solid; }
+    html.dark  .ev-badge { background:rgba(96,165,250,.08); border-color:rgba(96,165,250,.2); color:#93c5fd; }
+    html.light .ev-badge { background:rgba(59,130,246,.06); border-color:rgba(59,130,246,.2); color:#1d4ed8; }
+    /* Source attribution row */
+    .cp-source-row { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem .75rem; padding-top:.65rem; margin-top:.65rem; border-top:1px solid; }
+    html.dark  .cp-source-row { border-color:#21262d; }
+    html.light .cp-source-row { border-color:#f1f5f9; }
+    /* Dev mode toggle */
+    .devmode-toggle { display:inline-flex; align-items:center; gap:.35rem; font-size:.7rem; font-weight:600; padding:.2rem .55rem; border-radius:.375rem; border:1px dashed; cursor:pointer; transition:all .15s; user-select:none; }
+    html.dark  .devmode-toggle { border-color:#30363d; color:#4b5563; }
+    html.dark  .devmode-toggle:hover { border-color:#4b5563; color:#6b7280; }
+    html.light .devmode-toggle { border-color:#e2e8f0; color:#94a3b8; }
+    html.light .devmode-toggle:hover { border-color:#cbd5e1; color:#64748b; }
+    #chatMessages { scrollbar-width:thin; }
+    .typing-dot { animation:blink 1.2s infinite; }
+    .typing-dot:nth-child(2) { animation-delay:.2s; }
+    .typing-dot:nth-child(3) { animation-delay:.4s; }
+    @keyframes blink { 0%,80%,100%{opacity:.2;} 40%{opacity:1;} }
+    /* ── Language switcher ── */
+    .lang-switcher { display:flex; align-items:center; gap:.15rem; padding:.2rem; border:1px solid; border-radius:.5rem; }
+    html.dark  .lang-switcher { border-color:#21262d; }
+    html.light .lang-switcher { border-color:#e2e8f0; }
+    .lang-btn { padding:.2rem .45rem; font-size:.7rem; font-weight:600; border-radius:.3rem; cursor:pointer; transition:all .15s; background:transparent; border:none; line-height:1; }
+    html.dark  .lang-btn { color:#64748b; }
+    html.dark  .lang-btn:hover { color:#e2e8f0; background:#21262d; }
+    html.light .lang-btn { color:#94a3b8; }
+    html.light .lang-btn:hover { color:#1e293b; background:#f1f5f9; }
+    .lang-btn-active { background:#3b82f6 !important; color:#fff !important; }
+    /* ── Translate button ── */
+    .translate-btn { display:inline-flex; align-items:center; gap:.3rem; font-size:.7rem; font-weight:500; padding:.25rem .65rem; border-radius:.375rem; border:1px solid; cursor:pointer; transition:all .15s; background:transparent; }
+    html.dark  .translate-btn { border-color:#30363d; color:#4b5563; }
+    html.dark  .translate-btn:hover:not(:disabled) { border-color:#3b82f6; color:#60a5fa; background:rgba(59,130,246,.06); }
+    html.light .translate-btn { border-color:#e2e8f0; color:#94a3b8; }
+    html.light .translate-btn:hover:not(:disabled) { border-color:#3b82f6; color:#3b82f6; }
+    .translate-btn:disabled { opacity:.45; cursor:not-allowed; }
+    /* Hide translate buttons when English UI is selected */
+    html.lang-en .translate-btn { display:none !important; }
+    /* Translation panel inside cards */
+    .transl-panel { margin-top:.75rem; padding-top:.75rem; border-top:1px solid; }
+    html.dark  .transl-panel { border-color:#21262d; }
+    html.light .transl-panel { border-color:#f1f5f9; }
+
+    /* ── RWE / Partner Management System ─────────────────────────────────── */
+    /* Sub-nav tabs */
+    .rwe-tab {
+      padding:.45rem .9rem; font-size:.75rem; font-weight:500; cursor:pointer;
+      border-bottom:2px solid transparent; transition:all .15s; background:none;
+      margin-bottom:-1px; border-radius:0;
+    }
+    html.dark  .rwe-tab { color:#64748b; }
+    html.dark  .rwe-tab:hover  { color:#cbd5e1; border-bottom-color:#30363d; }
+    html.dark  .rwe-tab.active { color:#60a5fa; border-bottom-color:#3b82f6; }
+    html.light .rwe-tab { color:#94a3b8; }
+    html.light .rwe-tab:hover  { color:#475569; border-bottom-color:#e2e8f0; }
+    html.light .rwe-tab.active { color:#3b82f6; border-bottom-color:#3b82f6; }
+
+    /* Partner cards */
+    .partner-card {
+      border-radius:.75rem; border:1px solid;
+      transition:border-color .15s, box-shadow .15s;
+    }
+    html.dark  .partner-card { background:#0d1117; border-color:#21262d; }
+    html.dark  .partner-card:hover { border-color:#30363d; box-shadow:0 0 0 1px #30363d; }
+    html.light .partner-card { background:#fff; border-color:#e2e8f0; }
+    html.light .partner-card:hover { border-color:#cbd5e1; box-shadow:0 1px 6px rgba(0,0,0,.06); }
+
+    /* Lifecycle progress bar */
+    .lc-bar { display:flex; align-items:center; gap:0; overflow:hidden; }
+    .lc-node {
+      width:1.6rem; height:1.6rem; border-radius:50%; display:flex; align-items:center;
+      justify-content:center; font-size:.6rem; font-weight:700; flex-shrink:0;
+      border:1.5px solid; transition:all .2s; position:relative; z-index:1;
+    }
+    .lc-line { flex:1; height:2px; }
+    html.dark  .lc-node.lc-done  { background:#3b82f6; border-color:#3b82f6; color:#fff; }
+    html.dark  .lc-node.lc-curr  { background:#0d1117; border-color:#60a5fa; color:#60a5fa; box-shadow:0 0 0 3px rgba(59,130,246,.2); }
+    html.dark  .lc-node.lc-next  { background:#0d1117; border-color:#21262d; color:#30363d; }
+    html.dark  .lc-line.lc-done  { background:#3b82f6; }
+    html.dark  .lc-line.lc-next  { background:#21262d; }
+    html.light .lc-node.lc-done  { background:#3b82f6; border-color:#3b82f6; color:#fff; }
+    html.light .lc-node.lc-curr  { background:#fff; border-color:#3b82f6; color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.12); }
+    html.light .lc-node.lc-next  { background:#f8fafc; border-color:#e2e8f0; color:#cbd5e1; }
+    html.light .lc-line.lc-done  { background:#3b82f6; }
+    html.light .lc-line.lc-next  { background:#e2e8f0; }
+    .lc-node.lc-declined { background:#ef4444 !important; border-color:#ef4444 !important; color:#fff !important; }
+    .lc-node.lc-disabled { background:#6b7280 !important; border-color:#6b7280 !important; color:#fff !important; }
+
+    /* Source / agreement row cards */
+    .rwe-row-card {
+      border-radius:.625rem; border:1px solid; padding:.875rem 1rem;
+      transition:border-color .15s;
+    }
+    html.dark  .rwe-row-card { background:#0d1117; border-color:#21262d; }
+    html.dark  .rwe-row-card:hover { border-color:#30363d; }
+    html.light .rwe-row-card { background:#fff; border-color:#e2e8f0; }
+    html.light .rwe-row-card:hover { border-color:#cbd5e1; }
+
+    /* Status pills */
+    .rwe-pill {
+      display:inline-flex; align-items:center; gap:.25rem;
+      padding:.15rem .55rem; border-radius:9999px;
+      font-size:.65rem; font-weight:600; line-height:1.4;
+    }
+    .rwe-pill-dot { width:.4rem; height:.4rem; border-radius:50%; }
+    .pill-proposed  { background:rgba(100,116,139,.15); color:#94a3b8; }
+    .pill-contacted { background:rgba(59,130,246,.15);  color:#60a5fa; }
+    .pill-discussion{ background:rgba(14,165,233,.15);  color:#38bdf8; }
+    .pill-legal     { background:rgba(245,158,11,.15);  color:#fbbf24; }
+    .pill-approved  { background:rgba(20,184,166,.15);  color:#2dd4bf; }
+    .pill-active    { background:rgba(34,197,94,.15);   color:#4ade80; }
+    .pill-declined  { background:rgba(239,68,68,.15);   color:#f87171; }
+    .pill-disabled  { background:rgba(107,114,128,.15); color:#9ca3af; }
+    .pill-draft     { background:rgba(100,116,139,.12); color:#94a3b8; }
+    .pill-review    { background:rgba(59,130,246,.15);  color:#60a5fa; }
+    .pill-signed    { background:rgba(20,184,166,.15);  color:#2dd4bf; }
+    .pill-expired   { background:rgba(239,68,68,.12);   color:#f87171; }
+    .pill-auth      { background:rgba(34,197,94,.15);   color:#4ade80; }
+    .pill-unauth    { background:rgba(100,116,139,.12); color:#6b7280; }
+
+    /* RWE Modal */
+    .rwe-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); z-index:50; }
+    .rwe-modal-box {
+      position:relative; width:100%; max-width:34rem;
+      border-radius:1rem; border:1px solid; overflow:hidden;
+      max-height:90vh; display:flex; flex-direction:column;
+      box-shadow:0 25px 50px rgba(0,0,0,.4);
+    }
+    html.dark  .rwe-modal-box { background:#161b22; border-color:#30363d; }
+    html.light .rwe-modal-box { background:#fff;    border-color:#e2e8f0; }
+
+    /* Form inputs inside modal */
+    .rwe-input {
+      width:100%; padding:.5rem .75rem; border-radius:.5rem; border:1px solid;
+      font-size:.8rem; outline:none; transition:border-color .15s;
+    }
+    html.dark  .rwe-input { background:#0d1117; border-color:#30363d; color:#e6edf3; }
+    html.dark  .rwe-input:focus { border-color:#3b82f6; }
+    html.light .rwe-input { background:#fff; border-color:#e2e8f0; color:#1e293b; }
+    html.light .rwe-input:focus { border-color:#3b82f6; }
+    .rwe-label { display:block; font-size:.7rem; font-weight:500; margin-bottom:.3rem; }
+    html.dark  .rwe-label { color:#8b949e; }
+    html.light .rwe-label { color:#64748b; }
+
+    /* Architecture diagram */
+    .arch-pillar {
+      flex:1; border-radius:.75rem; border:1px solid; padding:1.25rem 1rem;
+      display:flex; flex-direction:column; gap:.625rem; min-width:0;
+    }
+    html.dark  .arch-pillar { background:#0d1117; border-color:#21262d; }
+    html.light .arch-pillar { background:#f8fafc; border-color:#e2e8f0; }
+    .arch-engine {
+      flex:1.2; border-radius:.75rem; border:2px solid #3b82f6;
+      padding:1.25rem 1rem; display:flex; flex-direction:column;
+      gap:.5rem; background:rgba(59,130,246,.04); min-width:0;
+    }
+    .arch-arrow { color:#3b82f6; font-size:1.1rem; flex-shrink:0; align-self:center; }
+    .arch-source-row {
+      display:flex; align-items:center; gap:.5rem; font-size:.7rem; padding:.25rem 0;
+    }
+    html.dark  .arch-source-row { color:#64748b; }
+    html.light .arch-source-row { color:#94a3b8; }
+    .arch-source-dot { width:.45rem; height:.45rem; border-radius:50%; flex-shrink:0; }
+    .arch-dot-live    { background:#4ade80; }
+    .arch-dot-pending { background:#30363d; }
+    html.light .arch-dot-pending { background:#e2e8f0; }
+
+    /* Contact chips in partner card */
+    .contact-chip {
+      display:inline-flex; align-items:center; gap:.3rem; padding:.2rem .55rem;
+      border-radius:.375rem; font-size:.65rem; border:1px solid;
+    }
+    html.dark  .contact-chip { background:#161b22; border-color:#21262d; color:#8b949e; }
+    html.light .contact-chip { background:#f8fafc; border-color:#e2e8f0; color:#64748b; }
+  </style>
+</head>
+
+<body class="dark:bg-surface-dark dark:text-slate-200 bg-slate-50 text-slate-800 min-h-screen">
+
+<!-- ── NAVBAR ───────────────────────────────────────────────────────────────── -->
+<nav class="sticky top-0 z-50 dark:bg-[#0d1117]/90 bg-white/90 dark:border-surface-border border-slate-200 border-b backdrop-blur-md">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+    <!-- Logo -->
+    <div class="flex items-center gap-2.5 flex-shrink-0">
+      <div class="w-7 h-7 rounded-lg bg-brand-500 flex items-center justify-center">
+        <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.3 24.3 0 014.5 0m0 0v5.714c0 .84.448 1.617 1.181 2.033l.537.31A3.75 3.75 0 0119.5 13.5V12a7.5 7.5 0 00-7.5-7.5H12"/>
+        </svg>
+      </div>
+      <span class="font-semibold text-sm tracking-wide">HLEO</span>
+      <span class="hidden sm:inline text-xs dark:text-slate-500 text-slate-400" data-i18n="nav_brand">Clinical Research</span>
+    </div>
+
+    <!-- Nav tabs -->
+    <div class="flex items-center gap-1 overflow-x-auto" id="mainNav">
+      <button class="nav-tab active" data-page="search">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+        <span data-i18n="nav_search">Search</span>
+      </button>
+      <button class="nav-tab" data-page="profiles">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z"/></svg>
+        <span data-i18n="nav_profiles">Profiles</span> <span id="profilesNavCount" class="text-xs opacity-60 ml-0.5"></span>
+      </button>
+      <button class="nav-tab" data-page="experiences">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+        <span data-i18n="nav_experiences">Experiences</span> <span id="expNavCount" class="text-xs opacity-60 ml-0.5"></span>
+      </button>
+      <button class="nav-tab" data-page="assistant">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+        <span data-i18n="nav_assistant">AI Assistant</span>
+      </button>
+      <button class="nav-tab" data-page="partners">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"/></svg>
+        <span data-i18n="nav_partners">Partners</span>
+      </button>
+    </div>
+
+    <!-- Right actions -->
+    <div class="flex items-center gap-1.5 flex-shrink-0">
+      <a href="/docs" target="_blank" class="hidden sm:inline text-xs dark:text-slate-500 text-slate-400 hover:text-brand-400 transition-colors px-2" data-i18n="nav_api">API</a>
+      <!-- Language switcher -->
+      <div class="lang-switcher" aria-label="Language">
+        <button class="lang-btn lang-btn-active" data-lang="en" onclick="setLang('en')">EN</button>
+        <button class="lang-btn" data-lang="it" onclick="setLang('it')">IT</button>
+      </div>
+      <button id="themeToggle" aria-label="Toggle theme"
+        class="w-8 h-8 rounded-lg flex items-center justify-center dark:hover:bg-surface-hover hover:bg-slate-100 transition-colors">
+        <svg class="w-4 h-4 dark:text-slate-400 text-slate-500 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/></svg>
+        <svg class="w-4 h-4 dark:hidden text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ════════════════════ PAGES ════════════════════ -->
+<main class="max-w-6xl mx-auto px-4 pb-16">
+
+<!-- ──────────────────── SEARCH PAGE ──────────────────── -->
+<div id="page-search">
+  <!-- Hero -->
+  <div class="text-center pt-14 pb-10">
+    <h1 class="text-3xl sm:text-4xl font-bold tracking-tight mb-2" data-i18n="search_hero_title">Clinical Research Search</h1>
+    <p class="dark:text-slate-400 text-slate-500 text-sm mb-8" data-i18n="search_hero_subtitle">PubMed · Europe PMC · ClinicalTrials.gov · Reddit</p>
+    <form id="searchForm" class="max-w-2xl mx-auto">
+      <div class="search-ring flex items-center gap-2 dark:bg-surface-card bg-white dark:border-surface-border border-slate-200 border rounded-xl px-4 py-3 shadow-sm">
+        <svg class="w-4 h-4 flex-shrink-0 dark:text-slate-500 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+        <input id="searchInput" type="text" placeholder="e.g. finasteride alopecia, BRCA1 cancer…" autocomplete="off"
+          data-i18n-ph="search_placeholder"
+          class="flex-1 bg-transparent outline-none text-sm dark:text-slate-100 text-slate-800 dark:placeholder-slate-500 placeholder-slate-400"/>
+        <button type="submit"
+          class="px-4 py-1.5 bg-brand-500 hover:bg-brand-600 active:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 flex-shrink-0">
+          <span data-i18n="search_btn">Search</span>
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Action bar -->
+  <div id="searchActionBar" class="hidden mb-5 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="text-xs dark:text-slate-500 text-slate-400 font-medium" data-i18n="search_filter_label">Filter:</span>
+      <button class="filter-btn active" data-source="all"><span data-i18n="search_filter_all">All</span> <span id="cnt-all" class="ml-1 opacity-70"></span></button>
+      <button class="filter-btn" data-source="pubmed">PubMed <span id="cnt-pubmed" class="ml-1 opacity-70"></span></button>
+      <button class="filter-btn" data-source="europepmc">Europe PMC <span id="cnt-europepmc" class="ml-1 opacity-70"></span></button>
+      <button class="filter-btn" data-source="clinicaltrials"><span data-i18n="search_filter_clinicaltrials">ClinicalTrials</span> <span id="cnt-clinicaltrials" class="ml-1 opacity-70"></span></button>
+      <button class="filter-btn" data-source="reddit">Reddit <span id="cnt-reddit" class="ml-1 opacity-70"></span></button>
+    </div>
+    <div class="flex gap-2 flex-wrap">
+      <button id="runPipelineBtn"
+        class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg>
+        <span id="pipelineBtnLabel" data-i18n="search_btn_extract_articles">Extract articles (LLM)</span>
+      </button>
+      <button id="runExperiencesBtn"
+        class="px-4 py-1.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+        <span id="expBtnLabel" data-i18n="search_btn_extract_experiences">Extract experiences (LLM)</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="searchBanner" class="hidden mb-4"></div>
+  <div id="skeleton" class="hidden space-y-3">
+    <div class="skeleton rounded-xl h-28"></div>
+    <div class="skeleton rounded-xl h-24"></div>
+    <div class="skeleton rounded-xl h-32"></div>
+    <div class="skeleton rounded-xl h-24"></div>
+  </div>
+  <div id="searchResults" class="space-y-3"></div>
+  <div id="searchEmpty" class="hidden text-center py-20 dark:text-slate-500 text-slate-400 text-sm" data-i18n="search_no_results">No results found.</div>
+</div><!-- /page-search -->
+
+<!-- ──────────────────── PROFILES PAGE ──────────────────── -->
+<div id="page-profiles" class="hidden pt-8">
+  <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+    <div>
+      <h2 class="text-xl font-bold" data-i18n="profiles_title">Clinical Profiles</h2>
+      <p class="text-sm dark:text-slate-400 text-slate-500 mt-0.5" data-i18n="profiles_subtitle">LLM-extracted from scientific articles</p>
+    </div>
+    <span id="profilesTotalBadge" class="text-xs dark:text-slate-500 text-slate-400"></span>
+  </div>
+  <div id="profilesSkeleton" class="hidden space-y-3">
+    <div class="skeleton rounded-xl h-40"></div>
+    <div class="skeleton rounded-xl h-40"></div>
+  </div>
+  <div id="profilesList" class="space-y-3"></div>
+  <div id="profilesEmpty" class="hidden text-center py-20 dark:text-slate-500 text-slate-400 text-sm" data-i18n-html="profiles_empty">No profiles yet. Run <strong>Extract articles (LLM)</strong> after a search.</div>
+</div>
+
+<!-- ──────────────────── EXPERIENCES PAGE ──────────────────── -->
+<div id="page-experiences" class="hidden pt-8">
+  <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+    <div>
+      <h2 class="text-xl font-bold" data-i18n="experiences_title">Patient Experiences</h2>
+      <p class="text-sm dark:text-slate-400 text-slate-500 mt-0.5" data-i18n="experiences_subtitle">Structured insights from patient-reported posts</p>
+    </div>
+    <span id="expTotalBadge" class="text-xs dark:text-slate-500 text-slate-400"></span>
+  </div>
+  <div id="expSkeleton" class="hidden space-y-3">
+    <div class="skeleton rounded-xl h-44"></div>
+    <div class="skeleton rounded-xl h-44"></div>
+  </div>
+  <div id="expList" class="space-y-3"></div>
+
+  <!-- Experiences empty state — updated dynamically by updateExpEmptyState() -->
+  <div id="expEmpty" class="hidden">
+    <div class="text-center py-16 max-w-md mx-auto">
+      <div id="expEmptyIcon" class="w-14 h-14 rounded-2xl mx-auto flex items-center justify-center mb-4 dark:bg-surface-card bg-slate-100">
+        <svg class="w-7 h-7 dark:text-slate-600 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
+        </svg>
+      </div>
+      <h3 id="expEmptyTitle" class="text-sm font-semibold dark:text-slate-300 text-slate-700 mb-1">No patient experiences yet</h3>
+      <p id="expEmptyBody" class="text-xs dark:text-slate-500 text-slate-400 leading-relaxed">
+        Search for a topic, then click <strong>Extract experiences (LLM)</strong> to collect and analyse Reddit posts.
+      </p>
+      <div id="expEmptySetup" class="hidden mt-5 text-left rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-4 text-xs dark:text-slate-300 text-slate-600 space-y-2">
+        <p class="font-semibold dark:text-slate-200 text-slate-700">Setup steps to connect Reddit:</p>
+        <ol class="list-decimal list-inside space-y-1.5 dark:text-slate-400 text-slate-500">
+          <li>Go to <a href="https://www.reddit.com/prefs/apps" target="_blank" class="text-brand-400 underline underline-offset-2">reddit.com/prefs/apps</a></li>
+          <li>Click <strong>Create another app…</strong> → choose <strong>script</strong></li>
+          <li>Name it anything; set redirect URI to <code class="dark:bg-surface-border bg-slate-100 px-1 rounded">http://localhost</code></li>
+          <li>Copy the <strong>client ID</strong> (under the app name) and the <strong>secret</strong></li>
+          <li>Add them as Replit Secrets: <strong>REDDIT_CLIENT_ID</strong> and <strong>REDDIT_CLIENT_SECRET</strong></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ──────────────────── ASSISTANT PAGE ──────────────────── -->
+<div id="page-assistant" class="hidden pt-8">
+  <div class="flex flex-col lg:flex-row gap-6" style="height:calc(100vh - 10rem);">
+
+    <!-- Sessions sidebar -->
+    <aside class="lg:w-64 flex-shrink-0 flex flex-col gap-3 overflow-y-auto">
+
+      <!-- Limit error banner -->
+      <div id="sessionLimitBanner" class="hidden items-start gap-2 rounded-lg px-3 py-2 bg-red-500/10 border border-red-500/30 text-xs text-red-400">
+        <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+        <span id="sessionLimitText"></span>
+      </div>
+
+      <!-- 🟢 Active sessions -->
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold uppercase tracking-wider dark:text-slate-500 text-slate-400">🟢 Active</span>
+          <button id="newSessionBtn"
+            class="text-xs px-2.5 py-1 bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-colors">+ New</button>
+        </div>
+        <div id="activeSessionList" class="space-y-1.5"></div>
+      </div>
+
+      <!-- ⚪ Closed sessions -->
+      <div class="flex flex-col gap-1.5">
+        <span class="text-xs font-semibold uppercase tracking-wider dark:text-slate-500 text-slate-400">⚪ Closed</span>
+        <div id="closedSessionList" class="space-y-1.5"></div>
+      </div>
+
+    </aside>
+
+    <!-- Chat area -->
+    <div class="flex-1 flex flex-col dark:bg-surface-card bg-white dark:border-surface-border border-slate-200 border rounded-xl overflow-hidden">
+      <!-- Context badge -->
+      <div id="contextBadge" class="hidden px-4 py-2 dark:bg-surface-hover bg-slate-50 dark:border-surface-border border-slate-200 border-b text-xs dark:text-slate-400 text-slate-500 flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+        <span id="contextBadgeText"></span>
+      </div>
+      <!-- Messages -->
+      <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3">
+        <div id="chatWelcome" class="h-full flex flex-col items-center justify-center text-center py-10">
+          <div class="w-14 h-14 rounded-2xl bg-brand-500/15 flex items-center justify-center mb-4">
+            <svg class="w-7 h-7 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+          </div>
+          <h3 class="font-semibold text-base mb-1" data-i18n="assistant_welcome_title">AI Clinical Assistant</h3>
+          <p class="text-sm dark:text-slate-400 text-slate-500 max-w-xs" data-i18n="assistant_welcome_subtitle">Ask questions about clinical profiles and patient experiences in the database. Answers are grounded in retrieved records.</p>
+          <div class="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-sm w-full text-left">
+            <button class="suggestion-chip" onclick="sendSuggestion(this)">What treatments are documented for alopecia?</button>
+            <button class="suggestion-chip" onclick="sendSuggestion(this)">Summarise side effects from patient reports</button>
+            <button class="suggestion-chip" onclick="sendSuggestion(this)">What evidence levels are in the database?</button>
+            <button class="suggestion-chip" onclick="sendSuggestion(this)">Compare outcomes across sources</button>
+          </div>
+        </div>
+      </div>
+      <!-- Input -->
+      <div class="p-3 dark:border-surface-border border-slate-200 border-t">
+        <div class="flex gap-2 items-end">
+          <textarea id="chatInput" rows="1" placeholder="Ask about clinical evidence or patient experiences…" data-i18n-ph="assistant_placeholder"
+            class="flex-1 bg-transparent dark:text-slate-100 text-slate-800 text-sm outline-none resize-none dark:placeholder-slate-500 placeholder-slate-400 py-1.5 max-h-32 overflow-y-auto"
+            style="field-sizing:content;"></textarea>
+          <button id="chatSendBtn"
+            class="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-colors">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.269 20.876L5.999 12zm0 0h7.5"/></svg>
+          </button>
+        </div>
+        <p class="text-xs dark:text-slate-600 text-slate-300 mt-1.5" data-i18n="assistant_disclaimer">Responses are grounded in your database. Always consult a qualified clinician for personal medical advice.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ────────────────── PARTNERS / RWE PAGE ────────────────── -->
+<div id="page-partners" class="hidden pt-6">
+  <!-- Page header -->
+  <div class="flex flex-wrap items-start justify-between gap-4 mb-5">
+    <div>
+      <h2 class="text-xl font-bold" data-i18n="partners_title">Partner Ecosystem</h2>
+      <p class="text-sm dark:text-slate-400 text-slate-500 mt-0.5" data-i18n="partners_subtitle">Community partnerships · Source registry · Evidence comparison</p>
+    </div>
+    <div id="rweHeaderActions"></div>
+  </div>
+
+  <!-- Stats strip (populated by JS) -->
+  <div id="rweStats" class="hidden mb-5 grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
+
+  <!-- Sub-nav -->
+  <div class="flex gap-0.5 border-b dark:border-surface-border border-slate-200 mb-6 overflow-x-auto">
+    <button class="rwe-tab active" data-sub="rwe-orgs"       onclick="showRweTab('rwe-orgs')"       data-i18n="rwe_nav_orgs">Community Partners</button>
+    <button class="rwe-tab"        data-sub="rwe-sources"    onclick="showRweTab('rwe-sources')"    data-i18n="rwe_nav_sources">Source Registry</button>
+    <button class="rwe-tab"        data-sub="rwe-contracts"  onclick="showRweTab('rwe-contracts')"  data-i18n="rwe_nav_contracts">Contracts &amp; Licensing</button>
+    <button class="rwe-tab"        data-sub="rwe-comparison" onclick="showRweTab('rwe-comparison')" data-i18n="rwe_nav_comparison">Evidence Comparison</button>
+  </div>
+
+  <!-- ── Community Partners ── -->
+  <div id="rwe-orgs" class="rwe-subpage">
+    <div id="rweBanner" class="hidden mb-4"></div>
+    <div id="rwePartnerGrid" class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+    <div id="rwePartnerEmpty" class="hidden text-center py-20">
+      <div class="text-4xl mb-3">🤝</div>
+      <p class="dark:text-slate-400 text-slate-500 text-sm mb-4" data-i18n="rwe_partners_empty">No partners registered yet.</p>
+      <button onclick="openRegisterPartnerModal()"
+        class="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold rounded-xl transition-colors" data-i18n="rwe_register_partner">Register Partner</button>
+    </div>
+  </div>
+
+  <!-- ── Source Registry ── -->
+  <div id="rwe-sources" class="rwe-subpage hidden">
+    <div id="rweSourceGrid" class="space-y-3"></div>
+    <div id="rweSourceEmpty" class="hidden text-center py-20">
+      <div class="text-4xl mb-3">🔌</div>
+      <p class="dark:text-slate-400 text-slate-500 text-sm mb-2" data-i18n="rwe_sources_empty">No sources registered.</p>
+    </div>
+  </div>
+
+  <!-- ── Contracts & Licensing ── -->
+  <div id="rwe-contracts" class="rwe-subpage hidden">
+    <div id="rweContractsList" class="space-y-3"></div>
+    <div id="rweContractsEmpty" class="hidden text-center py-20">
+      <div class="text-4xl mb-3">📋</div>
+      <p class="dark:text-slate-400 text-slate-500 text-sm" data-i18n="rwe_contracts_empty">No agreements on file.</p>
+    </div>
+  </div>
+
+  <!-- ── Evidence Comparison ── -->
+  <div id="rwe-comparison" class="rwe-subpage hidden">
+
+    <!-- Architecture diagram -->
+    <div class="dark:bg-[#0a0f1a] bg-slate-50 border dark:border-surface-border border-slate-200 rounded-2xl p-6 mb-6">
+      <div class="text-center mb-5">
+        <h3 class="font-bold text-sm dark:text-slate-200 text-slate-700" data-i18n="arch_engine_title">HLEO Comparison Engine</h3>
+        <p class="text-xs dark:text-slate-600 text-slate-400 mt-0.5" data-i18n="arch_engine_sub">Evidence concordance analysis · rwe_v1 framework</p>
+      </div>
+
+      <!-- Three-pillar layout -->
+      <div class="flex flex-col sm:flex-row gap-3 items-stretch mb-4">
+
+        <!-- Scientific pillar -->
+        <div class="arch-pillar flex-1">
+          <div class="text-xs font-semibold dark:text-slate-300 text-slate-600 mb-2" data-i18n="arch_sci_title">Scientific Evidence</div>
+          <div class="arch-source-row"><div class="arch-source-dot arch-dot-live"></div>PubMed</div>
+          <div class="arch-source-row"><div class="arch-source-dot arch-dot-live"></div>Europe PMC</div>
+          <div class="arch-source-row"><div class="arch-source-dot arch-dot-live"></div>ClinicalTrials.gov</div>
+        </div>
+
+        <!-- Arrows (desktop) -->
+        <div class="hidden sm:flex items-center justify-center text-brand-500 font-bold text-lg select-none">→</div>
+
+        <!-- Engine centre -->
+        <div class="arch-engine flex-1">
+          <div class="text-xs font-bold text-brand-400 text-center mb-2" data-i18n="arch_engine_title">HLEO Comparison Engine</div>
+          <div class="text-xs dark:text-slate-400 text-slate-500 text-center leading-relaxed" data-i18n="arch_dimensions">
+            Efficacy · Safety · Adherence · Tolerability · Quality of Life
+          </div>
+        </div>
+
+        <!-- Arrows (desktop) -->
+        <div class="hidden sm:flex items-center justify-center text-brand-500 font-bold text-lg select-none">←</div>
+
+        <!-- Community pillar (updated by JS) -->
+        <div class="arch-pillar flex-1" id="archCommunityPillar">
+          <div class="text-xs font-semibold dark:text-slate-300 text-slate-600 mb-2" data-i18n="arch_comm_title">Community Evidence</div>
+          <div class="arch-source-row dark:text-slate-600 text-slate-400 italic">
+            <div class="arch-source-dot arch-dot-pending"></div>
+            <span data-i18n="arch_awaiting">Awaiting authorized sources</span>
+          </div>
+          <div class="text-[.65rem] dark:text-slate-700 text-slate-300 mt-1.5" data-i18n="arch_awaiting_sub">Register and authorize partner sources to enable comparison</div>
+        </div>
+      </div>
+
+      <!-- Arrow down to output -->
+      <div class="flex justify-center mb-3">
+        <div class="w-px h-6 dark:bg-slate-700 bg-slate-200"></div>
+      </div>
+
+      <!-- Output card -->
+      <div class="dark:bg-[#161b22] bg-white border dark:border-surface-border border-slate-200 rounded-xl p-4 max-w-sm mx-auto text-center">
+        <div class="text-xs font-semibold dark:text-slate-200 text-slate-700 mb-1" data-i18n="arch_output_title">Comparative Evidence Report</div>
+        <div class="text-xs dark:text-slate-500 text-slate-400" data-i18n="arch_output_sub">Agreement score · Divergence mapping · Clinical synthesis</div>
+      </div>
+    </div>
+
+    <!-- Comparisons list -->
+    <div id="rweCompGrid" class="space-y-3"></div>
+    <div id="rweCompEmpty" class="hidden text-center py-12">
+      <p class="dark:text-slate-500 text-slate-400 text-sm mb-4" data-i18n="rwe_comparisons_empty">No comparisons yet.</p>
+      <button onclick="openNewComparisonModal()"
+        class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold rounded-xl transition-colors" data-i18n="rwe_new_comparison">New Comparison</button>
+    </div>
+  </div>
+</div>
+
+</main><!-- /main -->
+
+<!-- ═══════════════════ RWE MODAL ═══════════════════════════════════════════ -->
+<div id="rweModal" class="rwe-modal-backdrop hidden" style="display:none;align-items:center;justify-content:center;padding:1rem">
+  <div class="rwe-modal-box" style="margin:auto">
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b dark:border-[#30363d] border-slate-100 flex-shrink-0">
+      <h3 id="rweModalTitle" class="font-semibold text-base dark:text-slate-100 text-slate-800"></h3>
+      <button onclick="closeRweModal()" class="w-7 h-7 flex items-center justify-center rounded-lg dark:text-slate-500 text-slate-400 dark:hover:text-slate-300 hover:text-slate-600 dark:hover:bg-surface-hover hover:bg-slate-100 transition-colors text-lg leading-none">&times;</button>
+    </div>
+    <!-- Body (injected by JS) -->
+    <div id="rweModalBody" class="overflow-y-auto px-6 py-5 flex-1 space-y-4"></div>
+    <!-- Footer -->
+    <div class="flex justify-end gap-2 px-6 py-4 border-t dark:border-[#30363d] border-slate-100 flex-shrink-0">
+      <button onclick="closeRweModal()"
+        class="px-4 py-1.5 text-sm dark:text-slate-400 text-slate-500 dark:hover:text-slate-300 hover:text-slate-700 transition-colors" data-i18n="form_cancel">Cancel</button>
+      <button id="rweModalConfirmBtn" onclick="_rweConfirm()"
+        class="px-4 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold rounded-lg transition-colors"></button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .session-action-btn {
+    font-size: 0.65rem;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    display: inline-block;
+  }
+  .suggestion-chip {
+    padding:.5rem .75rem; font-size:.75rem; text-align:left;
+    dark:border-surface-border border-slate-200 border rounded-lg
+    dark:text-slate-400 text-slate-500 cursor:pointer;
+    transition:all .15s;
+  }
+  html.dark  .suggestion-chip { border:1px solid #21262d; color:#8b949e; background:transparent; }
+  html.dark  .suggestion-chip:hover { background:#21262d; color:#e6edf3; }
+  html.light .suggestion-chip { border:1px solid #e2e8f0; color:#64748b; background:transparent; }
+  html.light .suggestion-chip:hover { background:#f1f5f9; color:#1e293b; }
+</style>
+
+<script>
+// ═══════════════════ UTILITIES ═════════════════════════════════════════════
+const html = document.documentElement;
+function esc(s) {
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ═══════════════════ INTERNATIONALISATION (i18n) ═════════════════════════════
+// To add a language: duplicate one of the locale blocks below with a new key.
+// Static HTML uses data-i18n="key", data-i18n-html="key", data-i18n-ph="key".
+// Dynamic JS uses t('key').
+const TRANSLATIONS = {
+  en: {
+    nav_brand:"Clinical Research",
+    nav_search:"Search", nav_profiles:"Profiles",
+    nav_experiences:"Experiences", nav_assistant:"AI Assistant", nav_api:"API",
+    search_hero_title:"Clinical Research Search",
+    search_hero_subtitle:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit",
+    search_placeholder:"e.g. finasteride alopecia, BRCA1 cancer\u2026",
+    search_btn:"Search",
+    search_filter_label:"Filter:",
+    search_filter_all:"All",
+    search_filter_clinicaltrials:"ClinicalTrials",
+    search_btn_extract_articles:"Extract articles (LLM)",
+    search_btn_extract_experiences:"Extract experiences (LLM)",
+    search_no_results:"No results found.",
+    search_llm_disabled:"\u2139\ufe0f LLM key not configured \u2014 search-only mode.",
+    search_running:"Running\u2026",
+    banner_article_complete:"Article extraction complete",
+    banner_profiles_saved:"profiles saved",
+    banner_already_existed:"already existed",
+    banner_errors:"errors",
+    banner_view_profiles:"View profiles \u2192",
+    banner_exp_complete:"Experience extraction complete",
+    banner_exp_saved:"experiences saved",
+    banner_exp_skipped:"skipped",
+    banner_view_experiences:"View experiences \u2192",
+    profiles_title:"Clinical Profiles",
+    profiles_subtitle:"LLM-extracted from scientific articles",
+    profiles_empty:"No profiles yet. Run <strong>Extract articles (LLM)</strong> after a search.",
+    profile_section_diagnosis:"Diagnosis",
+    profile_section_treatments:"Treatments & Dosages",
+    profile_section_outcomes:"Outcomes",
+    profile_section_adverse:"Adverse Events",
+    profile_section_triggers:"Triggers & Symptoms",
+    profile_section_labs:"Laboratory & Biopsy Findings",
+    profile_section_timeline:"Timeline",
+    profile_no_data:"No structured clinical data could be extracted from this abstract.",
+    card_dev_mode:"Developer mode",
+    card_dev_mode_desc:"Raw extracted JSON \u2014 for debugging and integration use only.",
+    card_open_source:"Open source",
+    experiences_title:"Patient Experiences",
+    experiences_subtitle:"Structured insights from patient-reported posts",
+    exp_badge_label:"Patient Experience",
+    exp_confidence:"confidence",
+    exp_field_condition:"Condition", exp_field_duration:"Duration",
+    exp_field_treatments:"Treatments tried", exp_field_current:"Current",
+    exp_field_outcomes:"Outcomes", exp_field_side_effects:"Side effects",
+    exp_field_emotional:"Emotional impact", exp_field_age_sex:"Age / Sex",
+    exp_field_unmet_needs:"Unmet needs",
+    exp_reddit_source:"Reddit source \u2197",
+    exp_empty_default_title:"No patient experiences yet",
+    exp_empty_default_body:"Search for a topic, then click <strong>Extract experiences (LLM)</strong> to collect and analyse Reddit posts.",
+    exp_empty_setup_title:"Setup steps to connect Reddit:",
+    exp_empty_no_creds_title:"Reddit not connected",
+    exp_empty_no_creds_body:"Add <strong>REDDIT_CLIENT_ID</strong> and <strong>REDDIT_CLIENT_SECRET</strong> as Replit Secrets (Settings \u2192 Secrets). Register a free Reddit script app at <a href=\"https://www.reddit.com/prefs/apps\" target=\"_blank\" class=\"underline\">reddit.com/prefs/apps</a> \u2014 takes about 60 seconds.",
+    exp_empty_auth_error_title:"Reddit authentication failed",
+    exp_empty_auth_error_body:"The credentials on file were rejected. Check that <strong>REDDIT_CLIENT_ID</strong> and <strong>REDDIT_CLIENT_SECRET</strong> are correct and the app type is <em>script</em>.",
+    exp_empty_rate_limited_title:"Reddit rate limit reached",
+    exp_empty_rate_limited_body:"Too many requests. Wait 60 seconds and try again.",
+    exp_empty_no_results_title:"No Reddit posts found",
+    exp_empty_network_error_title:"Could not reach Reddit",
+    exp_empty_network_error_body:"Network error connecting to Reddit\u2019s API. Check the server connection.",
+    exp_empty_no_openai_title:"LLM extraction disabled",
+    exp_empty_no_openai_body:"Set the <strong>OPENAI_API_KEY</strong> Replit Secret to enable patient experience extraction.",
+    assistant_sessions_label:"Sessions",
+    assistant_new_session:"New",
+    assistant_welcome_title:"AI Clinical Assistant",
+    assistant_welcome_subtitle:"Ask questions about clinical profiles and patient experiences in the database. Answers are grounded in retrieved records.",
+    assistant_placeholder:"Ask about clinical evidence or patient experiences\u2026",
+    assistant_disclaimer:"Responses are grounded in your database. Always consult a qualified clinician for personal medical advice.",
+    assistant_records_used:"records referenced",
+    assistant_suggestion_1:"What treatments are documented for alopecia?",
+    assistant_suggestion_2:"Summarise side effects from patient reports",
+    assistant_suggestion_3:"What evidence levels are in the database?",
+    assistant_suggestion_4:"Compare outcomes across sources",
+    translate_btn:"\uD83C\uDF10 Translate",
+    translate_loading:"Translating\u2026",
+    translate_hide:"Hide translation",
+    translate_show:"Show translation",
+    translate_panel_label:"AI Translation",
+    translate_summary_label:"Summary",
+    translate_error:"Translation failed",
+    // ── Partner Management System ──────────────────────────────────────────
+    nav_partners:"Partners",
+    rwe_nav_orgs:"Community Partners", rwe_nav_sources:"Source Registry",
+    rwe_nav_contracts:"Contracts & Licensing", rwe_nav_comparison:"Evidence Comparison",
+    partners_title:"Partner Ecosystem",
+    partners_subtitle:"Community partnerships \u00b7 Source registry \u00b7 Evidence comparison",
+    rwe_register_partner:"Register Partner", rwe_register_source:"Register Source",
+    rwe_new_comparison:"New Comparison", rwe_add_contact:"Add Contact",
+    rwe_add_agreement:"Add Agreement", rwe_authorize:"Authorize", rwe_revoke:"Revoke",
+    rwe_advance_stage:"Advance Stage",
+    // Lifecycle stages
+    lc_proposed:"Proposed", lc_contacted:"Contacted", lc_in_discussion:"In Discussion",
+    lc_legal_review:"Legal Review", lc_approved:"Approved", lc_active:"Active",
+    lc_declined:"Declined", lc_disabled:"Disabled",
+    // Source / auth statuses
+    src_pending:"Pending", src_approved:"Approved", src_active:"Active",
+    src_paused:"Paused", src_suspended:"Suspended",
+    auth_unauthorized:"Unauthorized", auth_authorized:"Authorized",
+    auth_expired:"Expired", auth_revoked:"Revoked",
+    // Partner & integration types
+    ptype_forum:"Patient Forum", ptype_patient_org:"Patient Organisation",
+    ptype_healthcare_community:"Healthcare Community", ptype_research_network:"Research Network",
+    itype_api:"API", itype_licensed_dataset:"Licensed Dataset",
+    itype_rss:"RSS Feed", itype_manual_import:"Manual Import",
+    itype_research_collaboration:"Research Collaboration",
+    // Agreement types & statuses
+    agmt_mou:"MOU", agmt_dsa:"Data Sharing Agreement", agmt_nda:"NDA",
+    agmt_rca:"Research Collaboration Agreement", agmt_api_license:"API License",
+    agmt_draft:"Draft", agmt_under_review:"Under Review", agmt_negotiating:"Negotiating",
+    agmt_signed:"Signed", agmt_active:"Active", agmt_expired:"Expired",
+    agmt_terminated:"Terminated",
+    // License types
+    lic_cc_by:"CC BY", lic_cc_by_nc:"CC BY-NC", lic_proprietary:"Proprietary",
+    lic_research_only:"Research Only", lic_open_data:"Open Data", lic_custom:"Custom",
+    // Empty states
+    rwe_partners_empty:"No partners registered yet.",
+    rwe_sources_empty:"No sources registered. Approve a partner first, then register their sources.",
+    rwe_contracts_empty:"No agreements on file. Add agreements to partners to track legal status.",
+    rwe_comparisons_empty:"No comparisons yet. Create one once sources are authorized.",
+    // Form labels
+    form_name:"Name", form_short_name:"Short Name", form_org_type:"Organisation Type",
+    form_integration_type:"Integration Type", form_website:"Website",
+    form_description:"Description", form_notes:"Notes",
+    form_source_type:"Source Type", form_data_category:"Data Category",
+    form_evidence_level:"Evidence Level", form_geo_scope:"Geographic Scope",
+    form_est_records:"Estimated Records",
+    form_agreement_type:"Agreement Type", form_title:"Title", form_summary:"Summary",
+    form_cancel:"Cancel", form_save:"Save",
+    // Contacts
+    contact_full_name:"Full Name", contact_role:"Role", contact_email:"Email",
+    contact_phone:"Phone", contact_dept:"Department",
+    contact_primary:"Primary contact",
+    rwe_no_contacts:"No contacts added",
+    // Architecture diagram
+    arch_sci_title:"Scientific Evidence", arch_comm_title:"Community Evidence",
+    arch_engine_title:"HLEO Comparison Engine",
+    arch_engine_sub:"Evidence concordance analysis \u00b7 rwe_v1 framework",
+    arch_dimensions:"Efficacy \u00b7 Safety \u00b7 Adherence \u00b7 Tolerability \u00b7 Quality of Life",
+    arch_awaiting:"Awaiting authorized sources",
+    arch_awaiting_sub:"Register and authorize partner sources to enable comparison",
+    arch_output_title:"Comparative Evidence Report",
+    arch_output_sub:"Agreement score \u00b7 Divergence mapping \u00b7 Clinical synthesis",
+    // Stats
+    rwe_stat_pipeline:"In Pipeline", rwe_stat_active:"Active Partners",
+    rwe_stat_sources:"Sources", rwe_stat_agreements:"Agreements",
+    rwe_contacts_lbl:"contacts", rwe_agreements_lbl:"agreements",
+    rwe_sources_lbl:"sources",
+    // Comparison form
+    cmp_topic_label:"Clinical Topic",
+    cmp_topic_placeholder:"e.g. finasteride androgenetic alopecia",
+    cmp_dimensions_label:"Comparison Dimensions",
+    // Misc
+    rwe_loading:"Loading\u2026", rwe_partner_label:"Partner",
+    rwe_last_contact:"Last contact", rwe_next_followup:"Next follow-up",
+    lang_en:"EN", lang_it:"IT",
+  },
+  it: {
+    nav_brand:"Ricerca Clinica",
+    nav_search:"Ricerca", nav_profiles:"Profili",
+    nav_experiences:"Esperienze", nav_assistant:"Assistente IA", nav_api:"API",
+    search_hero_title:"Ricerca Clinica",
+    search_hero_subtitle:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit",
+    search_placeholder:"es. finasteride alopecia, cancro BRCA1\u2026",
+    search_btn:"Cerca",
+    search_filter_label:"Filtra:",
+    search_filter_all:"Tutti",
+    search_filter_clinicaltrials:"Studi Clinici",
+    search_btn_extract_articles:"Estrai articoli (LLM)",
+    search_btn_extract_experiences:"Estrai esperienze (LLM)",
+    search_no_results:"Nessun risultato trovato.",
+    search_llm_disabled:"\u2139\ufe0f Chiave LLM non configurata \u2014 solo modalit\u00e0 ricerca.",
+    search_running:"In corso\u2026",
+    banner_article_complete:"Estrazione articoli completata",
+    banner_profiles_saved:"profili salvati",
+    banner_already_existed:"gi\u00e0 presenti",
+    banner_errors:"errori",
+    banner_view_profiles:"Visualizza profili \u2192",
+    banner_exp_complete:"Estrazione esperienze completata",
+    banner_exp_saved:"esperienze salvate",
+    banner_exp_skipped:"ignorate",
+    banner_view_experiences:"Visualizza esperienze \u2192",
+    profiles_title:"Profili Clinici",
+    profiles_subtitle:"Estratti con LLM da articoli scientifici",
+    profiles_empty:"Nessun profilo. Esegui <strong>Estrai articoli (LLM)</strong> dopo una ricerca.",
+    profile_section_diagnosis:"Diagnosi",
+    profile_section_treatments:"Trattamenti e Dosaggi",
+    profile_section_outcomes:"Risultati",
+    profile_section_adverse:"Effetti Avversi",
+    profile_section_triggers:"Fattori Scatenanti e Sintomi",
+    profile_section_labs:"Risultati di Laboratorio e Biopsia",
+    profile_section_timeline:"Cronologia",
+    profile_no_data:"Nessun dato clinico strutturato estratto da questo abstract.",
+    card_dev_mode:"Modalit\u00e0 sviluppatore",
+    card_dev_mode_desc:"JSON estratto grezzo \u2014 solo per debug e integrazione.",
+    card_open_source:"Apri fonte",
+    experiences_title:"Esperienze dei Pazienti",
+    experiences_subtitle:"Sintesi strutturate da post di pazienti",
+    exp_badge_label:"Esperienza del Paziente",
+    exp_confidence:"affidabilit\u00e0",
+    exp_field_condition:"Condizione", exp_field_duration:"Durata",
+    exp_field_treatments:"Trattamenti provati", exp_field_current:"Attuale",
+    exp_field_outcomes:"Risultati", exp_field_side_effects:"Effetti collaterali",
+    exp_field_emotional:"Impatto emotivo", exp_field_age_sex:"Et\u00e0 / Sesso",
+    exp_field_unmet_needs:"Bisogni insoddisfatti",
+    exp_reddit_source:"Fonte Reddit \u2197",
+    exp_empty_default_title:"Nessuna esperienza ancora",
+    exp_empty_default_body:"Cerca un argomento, poi clicca su <strong>Estrai esperienze (LLM)</strong> per raccogliere e analizzare i post da Reddit.",
+    exp_empty_setup_title:"Passaggi per connettere Reddit:",
+    exp_empty_no_creds_title:"Reddit non connesso",
+    exp_empty_no_creds_body:"Aggiungi <strong>REDDIT_CLIENT_ID</strong> e <strong>REDDIT_CLIENT_SECRET</strong> come Segreti Replit (Impostazioni \u2192 Segreti). Registra un app Reddit gratuita su <a href=\"https://www.reddit.com/prefs/apps\" target=\"_blank\" class=\"underline\">reddit.com/prefs/apps</a>.",
+    exp_empty_auth_error_title:"Autenticazione Reddit fallita",
+    exp_empty_auth_error_body:"Le credenziali presenti sono state rifiutate. Verifica che <strong>REDDIT_CLIENT_ID</strong> e <strong>REDDIT_CLIENT_SECRET</strong> siano corretti e il tipo di app sia <em>script</em>.",
+    exp_empty_rate_limited_title:"Limite richieste Reddit raggiunto",
+    exp_empty_rate_limited_body:"Troppe richieste. Aspetta 60 secondi e riprova.",
+    exp_empty_no_results_title:"Nessun post Reddit trovato",
+    exp_empty_network_error_title:"Impossibile raggiungere Reddit",
+    exp_empty_network_error_body:"Errore di rete connettendo all\u2019API di Reddit. Verifica la connessione del server.",
+    exp_empty_no_openai_title:"Estrazione LLM disabilitata",
+    exp_empty_no_openai_body:"Imposta il Segreto Replit <strong>OPENAI_API_KEY</strong> per abilitare l\u2019estrazione delle esperienze dei pazienti.",
+    assistant_sessions_label:"Sessioni",
+    assistant_new_session:"Nuova",
+    assistant_welcome_title:"Assistente Clinico IA",
+    assistant_welcome_subtitle:"Fai domande sui profili clinici e le esperienze dei pazienti nel database. Le risposte sono basate sui dati recuperati.",
+    assistant_placeholder:"Chiedi informazioni su evidenze cliniche o esperienze dei pazienti\u2026",
+    assistant_disclaimer:"Le risposte si basano sul tuo database. Consulta sempre un clinico qualificato per consigli medici personali.",
+    assistant_records_used:"record utilizzati",
+    assistant_suggestion_1:"Quali trattamenti sono documentati per l\u2019alopecia?",
+    assistant_suggestion_2:"Riassumi gli effetti collaterali dalle segnalazioni dei pazienti",
+    assistant_suggestion_3:"Quali livelli di evidenza ci sono nel database?",
+    assistant_suggestion_4:"Confronta i risultati tra le fonti",
+    translate_btn:"\uD83C\uDF10 Traduci",
+    translate_loading:"Traduzione in corso\u2026",
+    translate_hide:"Nascondi traduzione",
+    translate_show:"Mostra traduzione",
+    translate_panel_label:"Traduzione IA",
+    translate_summary_label:"Riepilogo",
+    translate_error:"Traduzione non riuscita",
+    // ── Sistema di Gestione Partnership ────────────────────────────────────
+    nav_partners:"Partner",
+    rwe_nav_orgs:"Partner della Community", rwe_nav_sources:"Registro Fonti",
+    rwe_nav_contracts:"Contratti e Licenze", rwe_nav_comparison:"Confronto Evidenze",
+    partners_title:"Ecosistema Partner",
+    partners_subtitle:"Partnership comunitarie \u00b7 Registro fonti \u00b7 Confronto evidenze",
+    rwe_register_partner:"Registra Partner", rwe_register_source:"Registra Fonte",
+    rwe_new_comparison:"Nuovo Confronto", rwe_add_contact:"Aggiungi Contatto",
+    rwe_add_agreement:"Aggiungi Accordo", rwe_authorize:"Autorizza", rwe_revoke:"Revoca",
+    rwe_advance_stage:"Avanza Fase",
+    lc_proposed:"Proposto", lc_contacted:"Contattato", lc_in_discussion:"In Discussione",
+    lc_legal_review:"Revisione Legale", lc_approved:"Approvato", lc_active:"Attivo",
+    lc_declined:"Rifiutato", lc_disabled:"Disabilitato",
+    src_pending:"In attesa", src_approved:"Approvato", src_active:"Attivo",
+    src_paused:"In pausa", src_suspended:"Sospeso",
+    auth_unauthorized:"Non autorizzato", auth_authorized:"Autorizzato",
+    auth_expired:"Scaduto", auth_revoked:"Revocato",
+    ptype_forum:"Forum Pazienti", ptype_patient_org:"Organizzazione Pazienti",
+    ptype_healthcare_community:"Comunit\u00e0 Sanitaria", ptype_research_network:"Rete di Ricerca",
+    itype_api:"API", itype_licensed_dataset:"Dataset con Licenza",
+    itype_rss:"Feed RSS", itype_manual_import:"Importazione Manuale",
+    itype_research_collaboration:"Collaborazione di Ricerca",
+    agmt_mou:"MOU", agmt_dsa:"Accordo di Condivisione Dati", agmt_nda:"NDA",
+    agmt_rca:"Accordo di Collaborazione", agmt_api_license:"Licenza API",
+    agmt_draft:"Bozza", agmt_under_review:"In Revisione", agmt_negotiating:"In Negoziazione",
+    agmt_signed:"Firmato", agmt_active:"Attivo", agmt_expired:"Scaduto",
+    agmt_terminated:"Terminato",
+    lic_cc_by:"CC BY", lic_cc_by_nc:"CC BY-NC", lic_proprietary:"Proprietario",
+    lic_research_only:"Solo Ricerca", lic_open_data:"Dati Aperti", lic_custom:"Personalizzato",
+    rwe_partners_empty:"Nessun partner registrato.",
+    rwe_sources_empty:"Nessuna fonte registrata. Prima approva un partner.",
+    rwe_contracts_empty:"Nessun accordo registrato. Aggiungi accordi ai partner.",
+    rwe_comparisons_empty:"Nessun confronto ancora. Crea un confronto quando le fonti sono autorizzate.",
+    form_name:"Nome", form_short_name:"Nome Breve", form_org_type:"Tipo di Organizzazione",
+    form_integration_type:"Tipo di Integrazione", form_website:"Sito Web",
+    form_description:"Descrizione", form_notes:"Note",
+    form_source_type:"Tipo di Fonte", form_data_category:"Categoria Dati",
+    form_evidence_level:"Livello di Evidenza", form_geo_scope:"Ambito Geografico",
+    form_est_records:"Record Stimati",
+    form_agreement_type:"Tipo di Accordo", form_title:"Titolo", form_summary:"Sintesi",
+    form_cancel:"Annulla", form_save:"Salva",
+    contact_full_name:"Nome Completo", contact_role:"Ruolo", contact_email:"Email",
+    contact_phone:"Telefono", contact_dept:"Dipartimento",
+    contact_primary:"Contatto principale",
+    rwe_no_contacts:"Nessun contatto aggiunto",
+    arch_sci_title:"Evidenza Scientifica", arch_comm_title:"Evidenza della Community",
+    arch_engine_title:"Motore di Confronto HLEO",
+    arch_engine_sub:"Analisi concordanza evidenze \u00b7 framework rwe_v1",
+    arch_dimensions:"Efficacia \u00b7 Sicurezza \u00b7 Aderenza \u00b7 Tollerabilit\u00e0 \u00b7 Qualit\u00e0 della Vita",
+    arch_awaiting:"In attesa di fonti autorizzate",
+    arch_awaiting_sub:"Registra e autorizza fonti partner per abilitare il confronto",
+    arch_output_title:"Report Evidenze Comparative",
+    arch_output_sub:"Punteggio di concordanza \u00b7 Mappatura divergenze \u00b7 Sintesi clinica",
+    rwe_stat_pipeline:"In Pipeline", rwe_stat_active:"Partner Attivi",
+    rwe_stat_sources:"Fonti", rwe_stat_agreements:"Accordi",
+    rwe_contacts_lbl:"contatti", rwe_agreements_lbl:"accordi",
+    rwe_sources_lbl:"fonti",
+    cmp_topic_label:"Argomento Clinico",
+    cmp_topic_placeholder:"es. finasteride alopecia androgenetica",
+    cmp_dimensions_label:"Dimensioni di Confronto",
+    rwe_loading:"Caricamento\u2026", rwe_partner_label:"Partner",
+    rwe_last_contact:"Ultimo contatto", rwe_next_followup:"Prossimo follow-up",
+    lang_en:"EN", lang_it:"IT",
+  },
+};
+
+// ── i18n core ─────────────────────────────────────────────────────────────────
+let currentLang = localStorage.getItem('hleo-lang') || 'en';
+function t(key) { return TRANSLATIONS[currentLang]?.[key] ?? TRANSLATIONS.en[key] ?? key; }
+
+function applyTranslations() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    if (!el.children.length) el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.dataset.i18nHtml);
+  });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPh);
+  });
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.classList.toggle('lang-btn-active', btn.dataset.lang === currentLang);
+  });
+  html.classList.toggle('lang-en', currentLang === 'en');
+}
+
+function setLang(code) {
+  if (!TRANSLATIONS[code]) return;
+  currentLang = code;
+  localStorage.setItem('hleo-lang', code);
+  applyTranslations();
+  const activePage = document.querySelector('.nav-tab.active')?.dataset.page;
+  if (activePage === 'profiles')    loadProfiles();
+  if (activePage === 'experiences') loadExperiences();
+  if (activePage === 'partners')    loadRwePartners();
+  if (activePage === 'search' && allSearchResults.length) renderSearch();
+}
+
+// ── Per-card on-demand translation ────────────────────────────────────────────
+let _cardReg = {}, _cardId = 0;
+function _regCard(text, ctype) { const id = ++_cardId; _cardReg[id] = {text, ctype}; return id; }
+const _translCache = new Map();   // key: "lang:cardId"
+
+async function translateCard(btn) {
+  const id   = btn.dataset.cardId;
+  const info = _cardReg[id];
+  if (!info) return;
+  const panel = btn.parentElement.nextElementSibling;
+  if (!panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    btn.textContent = t('translate_btn');
+    return;
+  }
+  const ckey = currentLang + ':' + id;
+  if (_translCache.has(ckey)) {
+    _renderTranslPanel(panel, _translCache.get(ckey));
+    panel.classList.remove('hidden');
+    btn.textContent = t('translate_hide');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = t('translate_loading');
+  try {
+    const res  = await fetch('/translate', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text: info.text, target_lang: currentLang, content_type: info.ctype}),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    _translCache.set(ckey, data);
+    _renderTranslPanel(panel, data);
+    panel.classList.remove('hidden');
+    btn.textContent = t('translate_hide');
+  } catch(e) {
+    panel.innerHTML = `<p class="text-xs text-red-400 p-3">${t('translate_error')}: ${esc(e.message)}</p>`;
+    panel.classList.remove('hidden');
+    btn.textContent = t('translate_btn');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _renderTranslPanel(panel, data) {
+  const LNAMES = {it:'Italiano',en:'English',fr:'Fran\u00e7ais',de:'Deutsch',es:'Espa\u00f1ol',pt:'Portugu\u00eas'};
+  const lname  = LNAMES[data.target_lang] || data.target_lang;
+  panel.innerHTML =
+    `<div class="transl-panel px-5 pb-4 text-xs">
+      <div class="flex items-center gap-1.5 mb-2">
+        <span class="font-semibold dark:text-slate-300 text-slate-600">&#x1f310; ${esc(lname)}</span>
+        <span class="dark:text-slate-600 text-slate-400">&middot; ${t('translate_panel_label')}</span>
+      </div>
+      ${data.translation ? `<p class="dark:text-slate-300 text-slate-600 leading-relaxed mb-2">${esc(data.translation)}</p>` : ''}
+      ${data.summary    ? `<p class="dark:text-slate-400 text-slate-500 italic"><strong>${t('translate_summary_label')}:</strong> ${esc(data.summary)}</p>` : ''}
+    </div>`;
+}
+
+// ─── Theme ──────────────────────────────────────────────────────────────────
+if (localStorage.getItem('hleo-theme') === 'light') html.classList.replace('dark','light');
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = html.classList.contains('dark');
+  html.classList.replace(dark ? 'dark':'light', dark ? 'light':'dark');
+  localStorage.setItem('hleo-theme', dark ? 'light':'dark');
+});
+
+// ─── Page routing ────────────────────────────────────────────────────────────
+const pages = ['search','profiles','experiences','assistant','partners'];
+function showPage(name) {
+  activePage = name;   // keep global in sync
+  pages.forEach(p => {
+    document.getElementById(`page-${p}`).classList.toggle('hidden', p !== name);
+  });
+  document.querySelectorAll('.nav-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.page === name);
+  });
+
+  if (name === 'search') {
+    // Never leave the search skeleton visible when no request is in-flight
+    if (!_searchInProgress) {
+      document.getElementById('skeleton').classList.add('hidden');
+    }
+  }
+  // Only (re)fetch profiles when the data is actually stale, not on every navigation
+  if (name === 'profiles' && _profilesDirty) loadProfiles();
+  if (name === 'experiences') loadExperiences();
+  if (name === 'assistant')   loadSessions();
+  if (name === 'partners')    loadRwePartners();
+}
+document.querySelectorAll('.nav-tab').forEach(t => t.addEventListener('click', () => showPage(t.dataset.page)));
+
+// ─── Badge colours ──────────────────────────────────────────────────────────
+const SOURCE_COLOR = {
+  pubmed:'blue', europepmc:'violet', clinicaltrials:'emerald', reddit:'orange'
+};
+const DARK_BADGE  = { blue:'bg-blue-500/15 text-blue-400 ring-blue-500/20', violet:'bg-violet-500/15 text-violet-400 ring-violet-500/20', emerald:'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20', orange:'bg-orange-500/15 text-orange-400 ring-orange-500/20' };
+const LIGHT_BADGE = { blue:'bg-blue-50 text-blue-700 ring-blue-200', violet:'bg-violet-50 text-violet-700 ring-violet-200', emerald:'bg-emerald-50 text-emerald-700 ring-emerald-200', orange:'bg-orange-50 text-orange-700 ring-orange-200' };
+function badge(color, label) {
+  const dark = html.classList.contains('dark');
+  return `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ring-1 ring-inset ${dark ? DARK_BADGE[color]:LIGHT_BADGE[color]}">${esc(label)}</span>`;
+}
+
+// ─── Banner helper ───────────────────────────────────────────────────────────
+function showBanner(id, msg, type='error') {
+  const el = document.getElementById(id);
+  const cls = type==='error'   ? 'dark:bg-red-900/30 bg-red-50 dark:border-red-800 border-red-200 dark:text-red-300 text-red-700'
+            : type==='success' ? 'dark:bg-emerald-900/30 bg-emerald-50 dark:border-emerald-800 border-emerald-200 dark:text-emerald-300 text-emerald-700'
+            :                    'dark:bg-yellow-900/20 bg-yellow-50 dark:border-yellow-800 border-yellow-200 dark:text-yellow-300 text-yellow-700';
+  el.className = `${cls} border rounded-xl px-4 py-3 text-sm mb-4`;
+  el.innerHTML = msg;
+  el.classList.remove('hidden');
+}
+
+// ═══════════════════ SEARCH PAGE ═══════════════════════════════════════════
+let allSearchResults = [];
+let activeFilter = 'all';
+let lastQuery = '';
+// Feature 002: holds the active search context forwarded to the AI assistant
+let _activeSearchCtx         = null;
+let _currentSearchEpisodeIds = null;  // null = no search yet; [] = search run, pipeline pending; [ids] = filtered
+
+// ── Global navigation + loading-state flags ──────────────────────────────────
+let activePage       = 'search';   // tracks the currently visible tab (global, updated by showPage)
+let _searchInProgress = false;      // true only while a /search fetch is in-flight
+let _profilesDirty    = true;       // true = profiles must be (re)fetched on next navigation to Profiles
+
+function normResults(data) {
+  const out = [];
+  (data.pubmed||[]).forEach(a => out.push({type:'pubmed', data:a}));
+  (data.europepmc||[]).forEach(a => out.push({type:'europepmc', data:a}));
+  (data.clinicaltrials||[]).forEach(t => out.push({type:'clinicaltrials', data:t}));
+  (data.reddit||[]).forEach(p => out.push({type:'reddit', data:p}));
+  // Global clinical re-ranking: sort scientific articles by backend score desc.
+  // Reddit posts are pinned after all scientific results regardless of score.
+  out.sort((a, b) => {
+    const aIsReddit = a.type === 'reddit', bIsReddit = b.type === 'reddit';
+    if (aIsReddit !== bIsReddit) return aIsReddit ? 1 : -1;
+    return (b.data.score || 0) - (a.data.score || 0);
+  });
+  return out;
+}
+
+function buildSearchCard(item) {
+  const {type, data:r} = item;
+  const color = SOURCE_COLOR[type];
+  const LABEL = {pubmed:'PubMed', europepmc:'Europe PMC', clinicaltrials:'ClinicalTrials', reddit:'Reddit'};
+  const abs = (r.abstract||'').slice(0,280);
+  let href = null;
+  if (type==='pubmed' && r.pmid)               href = `https://pubmed.ncbi.nlm.nih.gov/${r.pmid}/`;
+  if (type==='europepmc' && r.doi)             href = `https://doi.org/${r.doi}`;
+  if (type==='clinicaltrials' && r.metadata?.nct_id) href = `https://clinicaltrials.gov/study/${r.metadata.nct_id}`;
+  if (type==='reddit' && r.url)                href = r.url;
+
+  const titleHtml = href
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener" class="hover:text-brand-400 transition-colors">${esc(r.title)}</a>`
+    : esc(r.title||'Untitled');
+
+  const metaParts = [];
+  if (type==='pubmed') { if(r.metadata?.journal) metaParts.push(`<em>${esc(r.metadata.journal)}</em>`); if(r.metadata?.pubdate) metaParts.push(esc(r.metadata.pubdate)); if(r.pmid) metaParts.push(`PMID ${esc(r.pmid)}`); }
+  if (type==='europepmc') { if(r.metadata?.journal) metaParts.push(`<em>${esc(r.metadata.journal)}</em>`); if(r.year) metaParts.push(esc(r.year)); if(r.doi) metaParts.push(`DOI ${esc(r.doi)}`); }
+  if (type==='clinicaltrials') {
+    const st=r.metadata?.status||''; if(st) metaParts.push(`<span class="px-1.5 py-0.5 rounded text-xs font-medium dark:bg-emerald-500/15 dark:text-emerald-400 bg-emerald-50 text-emerald-700">${esc(st.replace(/_/g,' '))}</span>`);
+    if(r.metadata?.nct_id) metaParts.push(esc(r.metadata.nct_id));
+  }
+  if (type==='reddit' && r.author) metaParts.push(`u/${esc(r.author)}`);
+
+  const _fullText = `${r.title || ''}\n\n${r.abstract || r.text || ''}`.trim();
+  const _cid = _regCard(_fullText, 'clinical_article');
+  return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-5 animate-slide-up" data-source="${type}">
+    <div class="flex items-start gap-2 mb-2.5">${badge(color, LABEL[type])}</div>
+    <h3 class="text-sm font-semibold dark:text-slate-100 text-slate-800 leading-snug mb-1.5">${titleHtml}</h3>
+    ${abs ? `<p class="text-xs dark:text-slate-400 text-slate-500 line-clamp-2 italic mb-2">${esc(abs)}…</p>` : ''}
+    ${metaParts.length ? `<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs dark:text-slate-500 text-slate-400">${metaParts.join('<span class="opacity-30">·</span>')}</div>` : ''}
+    <div class="mt-3">
+      <button class="translate-btn" data-card-id="${_cid}" onclick="translateCard(this)">${t('translate_btn')}</button>
+    </div>
+    <div class="hidden"></div>
+  </article>`;
+}
+
+function renderSearch() {
+  const container = document.getElementById('searchResults');
+  const empty     = document.getElementById('searchEmpty');
+  const filtered  = activeFilter==='all' ? allSearchResults : allSearchResults.filter(r=>r.type===activeFilter);
+  if (!filtered.length) { container.innerHTML=''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+  container.innerHTML = filtered.map(buildSearchCard).join('');
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn =>
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    activeFilter = btn.dataset.source;
+    renderSearch();
+  })
+);
+
+document.getElementById('searchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  lastQuery = q;
+  activeFilter = 'all';
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.toggle('active', b.dataset.source==='all'));
+  document.getElementById('searchBanner').classList.add('hidden');
+  document.getElementById('searchEmpty').classList.add('hidden');
+  document.getElementById('searchResults').innerHTML = '';
+  document.getElementById('skeleton').classList.remove('hidden');
+  document.getElementById('searchActionBar').classList.add('hidden');
+  // Mark profiles as needing a new pipeline run — clear the episode_id scope
+  // but do NOT reset the counter/badge yet (that happens after pipeline completes)
+  _currentSearchEpisodeIds = [];
+  _searchInProgress = true;
+
+  try {
+    const res  = await fetch(`/search?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    allSearchResults = normResults(data);
+
+    // Feature 002: capture search context for the AI assistant
+    const _orch = data.orchestration || {};
+    _activeSearchCtx = {
+      original_query:    q,
+      search_query:      _orch.search_query      || q,
+      detected_language: _orch.detected_language || 'en',
+      articles: allSearchResults
+        .filter(item => item.type !== 'reddit')
+        .map(item => ({
+          source:   item.type,
+          title:    item.data.title  || '',
+          abstract: (item.data.abstract || '').slice(0, 600),
+          url:      item.data.pmid
+            ? `https://pubmed.ncbi.nlm.nih.gov/${item.data.pmid}/`
+            : item.data.doi
+              ? `https://doi.org/${item.data.doi}`
+              : item.data.metadata?.nct_id
+                ? `https://clinicaltrials.gov/study/${item.data.metadata.nct_id}`
+                : (item.data.url || ''),
+          // Bibliographic identifiers — passed to the AI for accurate Key Studies citations
+          pmid:    item.data.pmid    || '',
+          doi:     item.data.doi     || '',
+          nct_id:  item.data.metadata?.nct_id || '',
+          year:    item.data.year    ? String(item.data.year)
+                 : (item.data.metadata?.pubdate || '').slice(0, 4) || '',
+          journal: item.data.metadata?.journal || '',
+        })),
+    };
+
+    const t = data.totals||{};
+    const total = Object.values(t).reduce((s,v)=>s+v,0);
+    document.getElementById('cnt-all').textContent          = total;
+    document.getElementById('cnt-pubmed').textContent       = t.pubmed||0;
+    document.getElementById('cnt-europepmc').textContent    = t.europepmc||0;
+    document.getElementById('cnt-clinicaltrials').textContent = t.clinicaltrials||0;
+    document.getElementById('cnt-reddit').textContent       = t.reddit||0;
+    document.getElementById('skeleton').classList.add('hidden');
+    document.getElementById('searchActionBar').classList.remove('hidden');
+    if (!data.llm_extraction) showBanner('searchBanner', 'ℹ️ LLM key not configured — search-only mode.', 'warn');
+    renderSearch();
+  } catch(err) {
+    document.getElementById('skeleton').classList.add('hidden');
+    showBanner('searchBanner', `Error: ${esc(err.message)}`);
+  } finally {
+    _searchInProgress = false;
+  }
+});
+
+// Pipeline run
+document.getElementById('runPipelineBtn').addEventListener('click', async () => {
+  if (!lastQuery) return;
+  const btn = document.getElementById('runPipelineBtn');
+  const lbl = document.getElementById('pipelineBtnLabel');
+  btn.disabled = true; lbl.textContent = 'Running…';
+  document.getElementById('searchBanner').classList.add('hidden');
+  try {
+    const res  = await fetch(`/pipeline/run?q=${encodeURIComponent(lastQuery)}`, {method:'POST'});
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    if (data.error) { showBanner('searchBanner', `⚠️ ${esc(data.error)}`, 'warn'); return; }
+    const n = data.saved, e = data.already_existed, err = data.errors;
+    let msg = `\u2705 ${t('banner_article_complete')} \u2014 <strong>${n} ${t('banner_profiles_saved')}</strong>`;
+    if (e)   msg += `, ${e} ${t('banner_already_existed')}`;
+    if (err) msg += `, ${err} ${t('banner_errors')}`;
+    msg += `. <button onclick="showPage('profiles')" class="underline ml-1">${t('banner_view_profiles')}</button>`;
+    showBanner('searchBanner', msg, 'success');
+    // Scope profiles view to this search only; mark dirty so nav refreshes it
+    _currentSearchEpisodeIds = data.episode_ids || [];
+    _profilesDirty = true;
+    if (activePage === 'profiles') loadProfiles();
+    refreshNavCounts();
+  } catch(err) {
+    showBanner('searchBanner', `Error: ${esc(err.message)}`);
+  } finally {
+    btn.disabled = false; lbl.textContent = 'Extract articles (LLM)';
+  }
+});
+
+// ── Reddit status → i18n UI message ─────────────────────────────────────────
+const REDDIT_STATUS_UI = {
+  no_credentials: { icon:'\uD83D\uDD11', type:'warn',  titleKey:'exp_empty_no_creds_title',    bodyKey:'exp_empty_no_creds_body' },
+  auth_error:     { icon:'\uD83D\uDEAB', type:'error', titleKey:'exp_empty_auth_error_title',   bodyKey:'exp_empty_auth_error_body' },
+  rate_limited:   { icon:'\u23F1\uFE0F', type:'warn',  titleKey:'exp_empty_rate_limited_title', bodyKey:'exp_empty_rate_limited_body' },
+  no_results:     { icon:'\uD83D\uDD0D', type:'warn',  titleKey:'exp_empty_no_results_title',   bodyKey:null },
+  network_error:  { icon:'\uD83D\uDCE1', type:'error', titleKey:'exp_empty_network_error_title',bodyKey:'exp_empty_network_error_body' },
+  no_openai_key:  { icon:'\uD83E\uDD16', type:'warn',  titleKey:'exp_empty_no_openai_title',    bodyKey:'exp_empty_no_openai_body' },
+};
+
+function redditStatusBanner(data) {
+  const status = data.reddit_status;
+  if (!status || status === 'ok') return null;
+  const ui = REDDIT_STATUS_UI[status];
+  if (!ui) return null;
+  const bodyText = ui.bodyKey ? t(ui.bodyKey) : esc(data.reddit_reason || '');
+  return {
+    type: ui.type,
+    html: `<strong>${ui.icon} ${t(ui.titleKey)}:</strong> ${bodyText}`,
+  };
+}
+
+// Experience ingest
+document.getElementById('runExperiencesBtn').addEventListener('click', async () => {
+  if (!lastQuery) return;
+  const btn = document.getElementById('runExperiencesBtn');
+  const lbl = document.getElementById('expBtnLabel');
+  btn.disabled = true; lbl.textContent = 'Running…';
+  document.getElementById('searchBanner').classList.add('hidden');
+  try {
+    const res  = await fetch(`/experiences/ingest?q=${encodeURIComponent(lastQuery)}`, {method:'POST'});
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+
+    // Check Reddit status first — may be the only response
+    const statusBanner = redditStatusBanner(data);
+    if (statusBanner) {
+      showBanner('searchBanner', statusBanner.html, statusBanner.type);
+      // Also refresh the Experiences tab so its empty state reflects the reason
+      updateExpEmptyState(data.reddit_status, data.reddit_reason);
+      return;
+    }
+
+    // Success path
+    const n = data.saved, e = data.already_existed, err = data.errors;
+    let msg = `\u2705 ${t('banner_exp_complete')} \u2014 <strong>${n} ${t('banner_exp_saved')}</strong>`;
+    if (e)   msg += `, ${e} ${t('banner_already_existed')}`;
+    if (err) msg += `, ${err} ${t('banner_exp_skipped')}`;
+    msg += `. <button onclick="showPage('experiences')" class="underline ml-1">${t('banner_view_experiences')}</button>`;
+    showBanner('searchBanner', msg, 'success');
+    refreshNavCounts();
+  } catch(err) {
+    showBanner('searchBanner', `Error: ${esc(err.message)}`);
+  } finally {
+    btn.disabled = false; lbl.textContent = 'Extract experiences (LLM)';
+  }
+});
+
+// ═══════════════════ PROFILES PAGE ═════════════════════════════════════════
+
+// SVG icons (inline, 14×14)
+const ICONS = {
+  diagnosis: `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.3 24.3 0 014.5 0m0 0v5.714c0 .845.449 1.618 1.182 2.033l.643.361a3 3 0 013.175 0l.643-.361A2.25 2.25 0 0019.5 9.318V3.104M14.25 3.104c.251.023.501.05.75.082M12 3v1.5"/></svg>`,
+  treatments: `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+  outcomes:   `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+  adverse:    `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>`,
+  evidence:   `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11.35 3.836c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m8.9-4.414c.376.023.75.05 1.124.08 1.131.094 1.976 1.057 1.976 2.192V16.5A2.25 2.25 0 0118 18.75h-2.25m-7.5-10.5H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V18.75m-7.5-10.5h6.375c.621 0 1.125.504 1.125 1.125v9.375"/></svg>`,
+  labs:       `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>`,
+  source:     `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>`,
+  external:   `<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>`,
+  code:       `<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>`,
+};
+
+// Chip row for a list of values
+function chipRow(items, cls) {
+  if (!items || !items.length) return '';
+  return `<div class="flex flex-wrap gap-1.5">${items.map(v => `<span class="cp-chip ${cls}">${esc(v)}</span>`).join('')}</div>`;
+}
+
+// Paired treatment + dose chips
+function treatmentRow(treatments, dosages, durations) {
+  if (!treatments || !treatments.length) return '';
+  return `<div class="flex flex-wrap gap-2">${treatments.map((t,i) => {
+    const dose = dosages?.[i] || '';
+    const dur  = durations?.[i] || '';
+    return `<span class="flex items-center gap-1 cp-chip cp-chip-treat">
+      ${esc(t)}
+      ${dose ? `<span class="cp-dose">${esc(dose)}</span>` : ''}
+      ${dur  ? `<span class="cp-dose opacity-70">${esc(dur)}</span>` : ''}
+    </span>`;
+  }).join('')}</div>`;
+}
+
+// Evidence level badge with colour-coded icon
+function evidenceBadge(level) {
+  if (!level) return '';
+  const upper = level.toUpperCase();
+  let dot = 'bg-brand-400';
+  if (/meta.?anal|systematic/i.test(level))    dot = 'bg-emerald-400';
+  else if (/phase\s*iii|rct|randomis/i.test(level)) dot = 'bg-emerald-400';
+  else if (/phase\s*ii/i.test(level))          dot = 'bg-yellow-400';
+  else if (/cohort|observ/i.test(level))        dot = 'bg-yellow-400';
+  else if (/case\s*report|case\s*series/i.test(level)) dot = 'bg-orange-400';
+  else if (/commentary|editorial|review/i.test(level)) dot = 'bg-slate-400';
+  return `<span class="ev-badge">${ICONS.evidence}<span class="w-1.5 h-1.5 rounded-full flex-shrink-0 ${dot}"></span>${esc(level)}</span>`;
+}
+
+// Source attribution footer
+function buildAttributionHtml(attr, p) {
+  const SOURCE_LABEL = {pubmed:'PubMed', europepmc:'Europe PMC', clinicaltrials:'ClinicalTrials.gov'};
+  const color = SOURCE_COLOR[p.source] || 'blue';
+  const srcLabel = SOURCE_LABEL[p.source] || p.source;
+  const date = p.processed_at
+    ? new Date(p.processed_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
+    : '';
+
+  const metaParts = [];
+  const journal  = (attr?.journal  || p.journal  || '').trim();
+  const pub_year = (attr?.pub_year || p.pub_year || '').trim();
+  const ext_id   = attr?.external_id || '';
+  if (journal)  metaParts.push(`<span class="italic">${esc(journal)}</span>`);
+  if (pub_year) metaParts.push(`<span>${esc(pub_year)}</span>`);
+  if (ext_id)   metaParts.push(`<span class="font-mono opacity-70 text-[.65rem]">${esc(ext_id)}</span>`);
+
+  const link = (attr?.source_url || p.url)
+    ? `<a href="${esc(attr?.source_url || p.url)}" target="_blank" rel="noopener"
+          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border transition-colors
+                 dark:border-surface-border dark:text-slate-400 dark:hover:text-brand-400 dark:hover:border-brand-500
+                 border-slate-200 text-slate-500 hover:text-brand-500 hover:border-brand-400 text-xs font-medium">
+        ${ICONS.external} ${esc(t('card_open_source'))}
+      </a>`
+    : '';
+
+  return `<div class="cp-source-row">
+    <span class="inline-flex items-center gap-1.5 text-xs dark:text-slate-500 text-slate-400">
+      ${ICONS.source}
+      ${badge(color, srcLabel)}
+      ${metaParts.join('<span class="opacity-20 mx-0.5">·</span>')}
+    </span>
+    ${link}
+    ${date ? `<span class="ml-auto text-xs dark:text-slate-600 text-slate-300">${esc(date)}</span>` : ''}
+  </div>`;
+}
+
+function buildProfileCard(p) {
+  const prof = p.profile || {};
+  const diagnosis         = prof.diagnosis         || [];
+  const treatments        = prof.treatments        || [];
+  const dosages           = prof.dosages           || [];
+  const treatment_duration= prof.treatment_duration|| [];
+  const outcomes          = prof.outcomes          || [];
+  const adverse_effects   = prof.adverse_effects   || [];
+  const evidence_level    = prof.evidence_level    || '';
+  const disease_stage     = prof.disease_stage     || '';
+  const triggers          = prof.triggers          || [];
+  const symptoms          = prof.symptoms          || [];
+  const lab_findings      = prof.laboratory_findings || [];
+  const biopsy_findings   = prof.biopsy_findings   || [];
+  const imaging_findings  = prof.imaging_findings  || [];
+  const timeline          = prof.timeline          || [];
+  const demographics      = [prof.patient_age, prof.patient_sex].filter(Boolean).join(', ');
+
+  const titleLink = (p.url)
+    ? `<a href="${esc(p.url)}" target="_blank" rel="noopener"
+          class="hover:text-brand-400 transition-colors">${esc(p.title || p.episode_id)}</a>`
+    : esc(p.title || p.episode_id);
+
+  const study_population  = prof.study_population  || '';
+  const hasContent = diagnosis.length || treatments.length || outcomes.length
+    || adverse_effects.length || evidence_level || disease_stage
+    || triggers.length || lab_findings.length || biopsy_findings.length
+    || imaging_findings.length;
+
+  // Build section blocks — only render sections with data
+  let sections = '';
+
+  // ── Evidence level ─────────────────────────────────────────────────────
+  const evHtml = evidenceBadge(evidence_level);
+
+  // ── Demographics / stage ───────────────────────────────────────────────
+  const topMeta = [];
+  if (disease_stage)    topMeta.push(`<span class="cp-chip cp-chip-stage text-xs">${esc(disease_stage)}</span>`);
+  if (study_population) topMeta.push(`<span class="cp-chip cp-chip-lab text-xs">${esc(study_population)}</span>`);
+  if (demographics)     topMeta.push(`<span class="text-xs dark:text-slate-500 text-slate-400">${esc(demographics)}</span>`);
+
+  // ── Diagnosis ──────────────────────────────────────────────────────────
+  if (diagnosis.length) {
+    sections += `<div class="cp-section">
+      <div class="cp-section-label">${ICONS.diagnosis} ${esc(t('profile_section_diagnosis'))}</div>
+      ${chipRow(diagnosis, 'cp-chip-diag')}
+    </div>`;
+  }
+
+  // ── Treatments & Dosages ───────────────────────────────────────────────
+  if (treatments.length) {
+    sections += `<div class="cp-section">
+      <div class="cp-section-label">${ICONS.treatments} ${esc(t('profile_section_treatments'))}</div>
+      ${treatmentRow(treatments, dosages, treatment_duration)}
+    </div>`;
+  }
+
+  // ── Outcomes + Adverse Events (side by side when both exist) ──────────
+  const hasOut = outcomes.length > 0;
+  const hasAE  = adverse_effects.length > 0;
+  if (hasOut || hasAE) {
+    if (hasOut && hasAE) {
+      sections += `<div class="cp-section">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <div class="cp-section-label">${ICONS.outcomes} ${esc(t('profile_section_outcomes'))}</div>
+            ${chipRow(outcomes, 'cp-chip-out')}
+          </div>
+          <div>
+            <div class="cp-section-label">${ICONS.adverse} ${esc(t('profile_section_adverse'))}</div>
+            ${chipRow(adverse_effects, 'cp-chip-ae')}
+          </div>
+        </div>
+      </div>`;
+    } else if (hasOut) {
+      sections += `<div class="cp-section">
+        <div class="cp-section-label">${ICONS.outcomes} ${esc(t('profile_section_outcomes'))}</div>
+        ${chipRow(outcomes, 'cp-chip-out')}
+      </div>`;
+    } else {
+      sections += `<div class="cp-section">
+        <div class="cp-section-label">${ICONS.adverse} ${esc(t('profile_section_adverse'))}</div>
+        ${chipRow(adverse_effects, 'cp-chip-ae')}
+      </div>`;
+    }
+  }
+
+  // ── Triggers / Symptoms ────────────────────────────────────────────────
+  const trigAndSym = [...triggers, ...symptoms.slice(0,3)].filter(Boolean);
+  if (trigAndSym.length) {
+    sections += `<div class="cp-section">
+      <div class="cp-section-label">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+        ${esc(t('profile_section_triggers'))}
+      </div>
+      ${chipRow(trigAndSym, 'cp-chip-lab')}
+    </div>`;
+  }
+
+  // ── Lab / Biopsy / Timeline ────────────────────────────────────────────
+  const labItems = [...lab_findings, ...biopsy_findings, ...imaging_findings].filter(Boolean);
+  if (labItems.length) {
+    sections += `<div class="cp-section">
+      <div class="cp-section-label">${ICONS.labs} ${esc(t('profile_section_labs'))}</div>
+      ${chipRow(labItems, 'cp-chip-lab')}
+    </div>`;
+  }
+  if (timeline.length) {
+    sections += `<div class="cp-section">
+      <div class="cp-section-label">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        ${esc(t('profile_section_timeline'))}
+      </div>
+      <ol class="space-y-1">${timeline.map(tl => `<li class="flex gap-2 text-xs dark:text-slate-400 text-slate-600"><span class="mt-1 w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0"></span>${esc(tl)}</li>`).join('')}</ol>
+    </div>`;
+  }
+
+  // ── Empty state ────────────────────────────────────────────────────────
+  if (!hasContent) {
+    sections = `<div class="cp-section">
+      <p class="text-xs dark:text-slate-500 text-slate-400 italic">
+        ${esc(t('profile_no_data'))}
+      </p>
+    </div>`;
+  }
+
+  return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 overflow-hidden animate-slide-up">
+
+    <!-- Card header -->
+    <div class="px-5 pt-5 pb-3">
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        ${evHtml}
+        ${topMeta.join('')}
+      </div>
+      <h3 class="text-sm font-semibold dark:text-slate-100 text-slate-800 leading-snug">
+        ${titleLink}
+      </h3>
+    </div>
+
+    <!-- Clinical sections -->
+    <div class="px-5 pb-1">
+      ${sections}
+    </div>
+
+    <!-- Source attribution footer -->
+    <div class="px-5 pb-4">
+      ${buildAttributionHtml(p.attribution, p)}
+    </div>
+
+    <!-- Developer mode (raw JSON) -->
+    <details class="border-t dark:border-surface-border border-slate-100">
+      <summary class="devmode-toggle mx-5 my-2.5">
+        ${ICONS.code}
+        ${esc(t('card_dev_mode'))}
+        <svg class="chev w-3 h-3 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg>
+      </summary>
+      <div class="px-5 pb-4">
+        <p class="text-xs dark:text-slate-600 text-slate-400 mb-2">${esc(t('card_dev_mode_desc'))}</p>
+        <pre class="text-xs dark:bg-[#0d1117] bg-slate-50 dark:text-slate-300 text-slate-700 rounded-lg p-3 overflow-x-auto leading-relaxed">${esc(JSON.stringify(prof,null,2))}</pre>
+      </div>
+    </details>
+  </article>`;
+}
+
+async function loadProfiles() {
+  const list  = document.getElementById('profilesList');
+  const empty = document.getElementById('profilesEmpty');
+  const skel  = document.getElementById('profilesSkeleton');
+  skel.classList.remove('hidden'); list.innerHTML=''; empty.classList.add('hidden');
+
+  // If a search was run but the pipeline hasn't completed yet, show empty state immediately
+  if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length === 0) {
+    skel.classList.add('hidden');
+    document.getElementById('profilesTotalBadge').textContent = '';
+    document.getElementById('profilesNavCount').textContent   = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  // Build URL: filter by current search episode_ids when available
+  let url = '/profiles?limit=50';
+  if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length > 0) {
+    url += `&episode_ids=${encodeURIComponent(_currentSearchEpisodeIds.join(','))}`;
+  }
+
+  try {
+    const res  = await fetch(url);
+    const data = await res.json();
+    skel.classList.add('hidden');
+    _profilesDirty = false;   // data is now current — suppress re-fetch on next navigation
+    document.getElementById('profilesTotalBadge').textContent = data.total ? `${data.total} profile${data.total!==1?'s':''}` : '';
+    document.getElementById('profilesNavCount').textContent   = data.total ? `(${data.total})` : '';
+    if (!data.profiles?.length) { empty.classList.remove('hidden'); return; }
+    list.innerHTML = data.profiles.map(buildProfileCard).join('');
+  } catch(e) {
+    skel.classList.add('hidden');
+    list.innerHTML = `<p class="text-xs text-red-400">Failed: ${esc(e.message)}</p>`;
+  }
+}
+
+// ═══════════════════ EXPERIENCES PAGE ══════════════════════════════════════
+function buildExperienceCard(exp) {
+  const p = exp.profile || {};
+  const condition   = p.condition || 'Unknown condition';
+  const summary     = p.experience_summary || '';
+  const treats      = (p.treatments_tried||[]).slice(0,4).join(', ');
+  const outcomes    = (p.reported_outcomes||[]).slice(0,3).join(', ');
+  const sideEffects = (p.side_effects||[]).slice(0,3).join(', ');
+  const quotes      = (p.key_quotes||[]).slice(0,2);
+  const conf        = p.extraction_confidence;
+  const confColor   = conf==='high' ? 'text-emerald-400' : conf==='low' ? 'text-red-400' : 'text-yellow-400';
+  const date = exp.ingested_at ? new Date(exp.ingested_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+
+  const fields = [
+    [t('exp_field_condition'),   condition],
+    [t('exp_field_duration'),    p.condition_duration],
+    [t('exp_field_treatments'),  treats],
+    [t('exp_field_current'),     p.current_treatment],
+    [t('exp_field_outcomes'),    outcomes],
+    [t('exp_field_side_effects'),sideEffects],
+    [t('exp_field_emotional'),   p.emotional_impact],
+    [t('exp_field_age_sex'),     [p.age, p.sex].filter(Boolean).join(', ')],
+  ].filter(([,v]) => v);
+
+  const _expText = `${summary}\n\n${quotes.join('\n')}`.trim();
+  const _ecid = _regCard(_expText || p.condition || '', 'patient_experience');
+
+  return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-5 animate-slide-up">
+    <div class="flex items-start gap-2 mb-2.5 flex-wrap">
+      ${badge('orange', t('exp_badge_label'))}
+      ${conf ? `<span class="text-xs font-medium ${confColor}">${esc(conf)} ${t('exp_confidence')}</span>` : ''}
+      ${exp.query_context ? `<span class="text-xs dark:text-slate-500 text-slate-400">query: "${esc(exp.query_context)}"</span>` : ''}
+    </div>
+    ${summary ? `<p class="text-sm dark:text-slate-200 text-slate-700 font-medium leading-snug mb-3">${esc(summary)}</p>` : ''}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 mb-3">
+      ${fields.map(([label,val]) => `<div>
+        <span class="profile-label dark:text-slate-500 text-slate-400 block mb-0.5">${esc(label)}</span>
+        <span class="text-xs dark:text-slate-300 text-slate-700">${esc(val)}</span>
+      </div>`).join('')}
+    </div>
+    ${quotes.length ? `<div class="mt-2 space-y-1.5">
+      ${quotes.map(q => `<blockquote class="border-l-2 border-brand-500 pl-3 text-xs dark:text-slate-400 text-slate-500 italic">"${esc(q)}"</blockquote>`).join('')}
+    </div>` : ''}
+    ${exp.source_url ? `<div class="mt-2 pt-2 dark:border-surface-border border-slate-100 border-t text-xs">
+      <a href="${esc(exp.source_url)}" target="_blank" rel="noopener" class="dark:text-slate-500 text-slate-400 hover:text-brand-400 underline underline-offset-2 transition-colors">${t('exp_reddit_source')}</a>
+    </div>` : ''}
+    ${(p.unmet_needs||[]).length ? `<div class="mt-2">
+      <span class="profile-label dark:text-slate-500 text-slate-400 block mb-1">${t('exp_field_unmet_needs')}</span>
+      <div class="flex flex-wrap gap-1.5">${(p.unmet_needs||[]).map(n=>`<span class="text-xs dark:bg-surface-border bg-slate-100 dark:text-slate-300 text-slate-600 px-2 py-0.5 rounded-full">${esc(n)}</span>`).join('')}</div>
+    </div>` : ''}
+    ${date ? `<p class="text-xs dark:text-slate-600 text-slate-300 mt-3 text-right">${esc(date)}</p>` : ''}
+    <div class="mt-3">
+      <button class="translate-btn" data-card-id="${_ecid}" onclick="translateCard(this)">${t('translate_btn')}</button>
+    </div>
+    <div class="hidden"></div>
+  </article>`;
+}
+
+// Update the Experiences empty state based on a Reddit status code
+function updateExpEmptyState(status, reason) {
+  const empty = document.getElementById('expEmpty');
+  const title = document.getElementById('expEmptyTitle');
+  const body  = document.getElementById('expEmptyBody');
+  const setup = document.getElementById('expEmptySetup');
+
+  const copyMap = {
+    no_credentials: { titleKey:'exp_empty_no_creds_title',    bodyKey:'exp_empty_no_creds_body',    showSetup:true  },
+    auth_error:     { titleKey:'exp_empty_auth_error_title',   bodyKey:'exp_empty_auth_error_body',   showSetup:false },
+    rate_limited:   { titleKey:'exp_empty_rate_limited_title', bodyKey:'exp_empty_rate_limited_body', showSetup:false },
+    no_results:     { titleKey:'exp_empty_no_results_title',   bodyKey:null,                          showSetup:false },
+    network_error:  { titleKey:'exp_empty_network_error_title',bodyKey:'exp_empty_network_error_body',showSetup:false },
+    no_openai_key:  { titleKey:'exp_empty_no_openai_title',    bodyKey:'exp_empty_no_openai_body',    showSetup:false },
+  };
+
+  const copy = copyMap[status] || { titleKey:'exp_empty_default_title', bodyKey:'exp_empty_default_body', showSetup:false };
+
+  if (title)  title.textContent = t(copy.titleKey);
+  if (body)   body.innerHTML    = copy.bodyKey ? t(copy.bodyKey) : esc(reason || t('exp_empty_default_body'));
+  if (setup)  setup.classList.toggle('hidden', !copy.showSetup);
+  empty.classList.remove('hidden');
+}
+
+async function loadExperiences() {
+  const list  = document.getElementById('expList');
+  const empty = document.getElementById('expEmpty');
+  const skel  = document.getElementById('expSkeleton');
+  skel.classList.remove('hidden'); list.innerHTML = ''; empty.classList.add('hidden');
+  try {
+    const res  = await fetch('/experiences?limit=50');
+    const data = await res.json();
+    skel.classList.add('hidden');
+    const total = data.total || 0;
+    document.getElementById('expTotalBadge').textContent = total ? `${total} experience${total !== 1 ? 's' : ''}` : '';
+    document.getElementById('expNavCount').textContent   = total ? `(${total})` : '';
+    if (!data.experiences?.length) {
+      // Show default empty state (no status known at load time)
+      updateExpEmptyState(null, null);
+      return;
+    }
+    list.innerHTML = data.experiences.map(buildExperienceCard).join('');
+  } catch (e) {
+    skel.classList.add('hidden');
+    list.innerHTML = `<p class="text-xs text-red-400">Failed to load: ${esc(e.message)}</p>`;
+  }
+}
+
+// ═══════════════════ ASSISTANT PAGE — Session Management (Feature 003) ═══════
+let currentSessionId = localStorage.getItem('hleo-session') || null;
+
+// ── Limit banner ────────────────────────────────────────────────────────────
+function showSessionBanner(msg) {
+  const banner = document.getElementById('sessionLimitBanner');
+  document.getElementById('sessionLimitText').textContent = msg;
+  banner.classList.remove('hidden');
+  banner.classList.add('flex');
+  clearTimeout(banner._hideTimer);
+  banner._hideTimer = setTimeout(() => {
+    banner.classList.add('hidden');
+    banner.classList.remove('flex');
+  }, 8000);
+}
+
+// ── Format helpers ───────────────────────────────────────────────────────────
+function fmtRelative(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr), now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+// ── Render session lists ─────────────────────────────────────────────────────
+async function loadSessions() {
+  try {
+    const res  = await fetch('/assistant/sessions');
+    const data = await res.json();
+    renderActiveList(data.active || []);
+    renderClosedList(data.closed || []);
+  } catch(e) { /* silent */ }
+}
+
+function renderActiveList(sessions) {
+  const el = document.getElementById('activeSessionList');
+  if (!sessions.length) {
+    el.innerHTML = '<p class="text-xs dark:text-slate-600 text-slate-400 px-1">No active sessions.</p>';
+    return;
+  }
+  el.innerHTML = sessions.map(s => {
+    const isOpen = s.session_id === currentSessionId;
+    const msgs   = s.message_count || 0;
+    const qTxt   = s.search_query ? `<span class="truncate opacity-60">${esc(s.search_query.slice(0,30))}</span>` : '';
+    return `
+    <div class="session-card rounded-lg p-2.5 text-xs transition-all cursor-pointer
+      ${isOpen ? 'dark:bg-brand-500/20 bg-brand-50 dark:border-brand-500/30 border-brand-200' : 'dark:bg-surface-hover/50 bg-slate-50 dark:border-surface-border border-slate-200'} border"
+      data-sid="${esc(s.session_id)}">
+      <div class="flex items-start justify-between gap-1 mb-1">
+        <span id="title-${esc(s.session_id)}" class="font-medium dark:text-slate-200 text-slate-700 leading-tight line-clamp-2 flex-1"
+          onclick="openSession('${esc(s.session_id)}')">${esc((s.title||'Untitled').slice(0,60))}</span>
+      </div>
+      ${qTxt ? `<div class="flex items-center gap-1 dark:text-slate-500 text-slate-400 mb-1.5">${qTxt}</div>` : ''}
+      <div class="flex items-center justify-between dark:text-slate-600 text-slate-400 mb-2">
+        <span>${msgs} msg${msgs!==1?'s':''}</span>
+        <span>${fmtRelative(s.updated_at)}</span>
+      </div>
+      <div class="flex gap-1 flex-wrap">
+        <button onclick="openSession('${esc(s.session_id)}')"
+          class="session-action-btn bg-brand-500/10 dark:text-brand-400 text-brand-600 hover:bg-brand-500/20">Open</button>
+        <button onclick="renameSession('${esc(s.session_id)}')"
+          class="session-action-btn dark:bg-slate-700 bg-slate-200 dark:text-slate-300 text-slate-600 hover:opacity-80">Rename</button>
+        <button onclick="closeSession('${esc(s.session_id)}')"
+          class="session-action-btn dark:bg-slate-700 bg-slate-200 dark:text-slate-400 text-slate-500 hover:opacity-80">Close</button>
+        <button onclick="deleteSession('${esc(s.session_id)}')"
+          class="session-action-btn bg-red-500/10 text-red-400 hover:bg-red-500/20">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderClosedList(sessions) {
+  const el = document.getElementById('closedSessionList');
+  if (!sessions.length) {
+    el.innerHTML = '<p class="text-xs dark:text-slate-600 text-slate-400 px-1">No closed sessions.</p>';
+    return;
+  }
+  el.innerHTML = sessions.map(s => {
+    const qTxt = s.search_query ? `<span class="truncate opacity-60">${esc(s.search_query.slice(0,30))}</span>` : '';
+    return `
+    <div class="rounded-lg p-2.5 text-xs dark:bg-surface-hover/30 bg-slate-50 dark:border-surface-border border-slate-200 border">
+      <div class="font-medium dark:text-slate-400 text-slate-500 leading-tight line-clamp-2 mb-1">
+        ${esc((s.title||'Untitled').slice(0,60))}
+      </div>
+      ${qTxt ? `<div class="flex items-center gap-1 dark:text-slate-600 text-slate-400 mb-1.5">${qTxt}</div>` : ''}
+      <div class="dark:text-slate-600 text-slate-400 mb-2">Closed ${fmtRelative(s.closed_at)}</div>
+      <div class="flex gap-1">
+        <button onclick="reopenSession('${esc(s.session_id)}')"
+          class="session-action-btn dark:bg-slate-700 bg-slate-200 dark:text-slate-300 text-slate-600 hover:opacity-80">Reopen</button>
+        <button onclick="deleteSession('${esc(s.session_id)}')"
+          class="session-action-btn bg-red-500/10 text-red-400 hover:bg-red-500/20">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Open / switch session ────────────────────────────────────────────────────
+async function openSession(sid) {
+  currentSessionId = sid;
+  localStorage.setItem('hleo-session', sid);
+  // Clear chat UI immediately
+  const msgs = document.getElementById('chatMessages');
+  msgs.innerHTML = '';
+  document.getElementById('contextBadge').classList.add('hidden');
+  loadSessions();   // re-render sidebar to highlight active card
+  try {
+    const res  = await fetch(`/assistant/sessions/${sid}`);
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+
+    // ── Session context: prefer live search over stored session context ──
+    // _activeSearchCtx = what the user just searched for in THIS browser tab.
+    // Only fall back to the session's stored context when no live context exists.
+    // Never overwrite a live search context with a potentially stale session record.
+    if (!_activeSearchCtx && data.search_context) {
+      _activeSearchCtx = data.search_context;
+    }
+    // Always sync the context badge to whichever context is now active
+    const badge    = document.getElementById('contextBadge');
+    const badgeTxt = document.getElementById('contextBadgeText');
+    const artCount = _activeSearchCtx?.articles?.length || 0;
+    if (artCount > 0) {
+      badgeTxt.textContent = `${artCount} article${artCount!==1?'s':''} in search context — "${_activeSearchCtx.original_query||''}"`;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
+    if (data.messages.length === 0) {
+      // Show welcome for empty sessions
+      const welcome = document.createElement('div');
+      welcome.id = 'chatWelcome';
+      welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
+      welcome.innerHTML = `<p class="text-sm dark:text-slate-400 text-slate-500">Session open. Ask a question to begin.</p>`;
+      msgs.appendChild(welcome);
+    } else {
+      data.messages.forEach(m => appendBubble(m.role, m.content, m.context_used?.length||0));
+      scrollChat();
+    }
+  } catch(e) {
+    const err = document.createElement('div');
+    err.className = 'text-xs text-red-400 px-4 py-2';
+    err.textContent = `Could not load session: ${e.message}`;
+    msgs.appendChild(err);
+  }
+}
+
+// ── New session ──────────────────────────────────────────────────────────────
+document.getElementById('newSessionBtn').addEventListener('click', async () => {
+  try {
+    const res  = await fetch('/assistant/sessions', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showSessionBanner(data.detail || 'Could not create session.');
+      return;
+    }
+    // Keep _activeSearchCtx — a new session should inherit the current search.
+    // The user just searched and wants to discuss those results; don't discard them.
+    currentSessionId = data.session_id;
+    localStorage.setItem('hleo-session', data.session_id);
+    const msgs = document.getElementById('chatMessages');
+    msgs.innerHTML = '';
+    document.getElementById('contextBadge').classList.add('hidden');
+    const welcome = document.createElement('div');
+    welcome.id = 'chatWelcome';
+    welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
+    welcome.innerHTML = `<p class="text-sm dark:text-slate-400 text-slate-500">New session created. Ask a question to begin.</p>`;
+    msgs.appendChild(welcome);
+    loadSessions();
+  } catch(e) {
+    showSessionBanner('Network error. Could not create session.');
+  }
+});
+
+// ── Rename ───────────────────────────────────────────────────────────────────
+async function renameSession(sid) {
+  const titleEl = document.getElementById(`title-${sid}`);
+  if (!titleEl) return;
+  const current = titleEl.textContent.trim();
+  // Replace title span with inline input
+  titleEl.innerHTML = `<input id="rename-input-${sid}"
+    class="w-full bg-transparent border-b dark:border-slate-500 border-slate-300 outline-none text-xs py-0.5"
+    value="${esc(current)}" maxlength="120" />`;
+  const inp = document.getElementById(`rename-input-${sid}`);
+  inp.focus(); inp.select();
+  const commit = async () => {
+    const newTitle = inp.value.trim();
+    if (!newTitle || newTitle === current) { titleEl.textContent = current; return; }
+    try {
+      const res = await fetch(`/assistant/sessions/${sid}`, {
+        method: 'PATCH',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ action: 'rename', title: newTitle }),
+      });
+      if (res.ok) { titleEl.textContent = newTitle; }
+      else { titleEl.textContent = current; const d = await res.json(); showSessionBanner(d.detail||'Rename failed.'); }
+    } catch(e) { titleEl.textContent = current; }
+  };
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); inp.blur(); } if (e.key==='Escape') { titleEl.textContent = current; } });
+}
+
+// ── Close ────────────────────────────────────────────────────────────────────
+async function closeSession(sid) {
+  try {
+    const res  = await fetch(`/assistant/sessions/${sid}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action: 'close' }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showSessionBanner(data.detail || 'Could not close session.'); return; }
+    // If we closed the active session, clear the chat — but keep the search context:
+    // _activeSearchCtx is search state, not session state; it must survive session ops.
+    if (sid === currentSessionId) {
+      currentSessionId = null;
+      localStorage.removeItem('hleo-session');
+      const msgs = document.getElementById('chatMessages');
+      msgs.innerHTML = '';
+      // Keep context badge visible if a live search context still exists
+      const badge = document.getElementById('contextBadge');
+      if (!(_activeSearchCtx?.articles?.length > 0)) badge.classList.add('hidden');
+      const welcome = document.createElement('div');
+      welcome.id = 'chatWelcome';
+      welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
+      welcome.innerHTML = `<p class="text-sm dark:text-slate-400 text-slate-500">Session closed. Open or create a session to continue.</p>`;
+      msgs.appendChild(welcome);
+    }
+    loadSessions();
+  } catch(e) { showSessionBanner('Network error. Could not close session.'); }
+}
+
+// ── Reopen ───────────────────────────────────────────────────────────────────
+async function reopenSession(sid) {
+  try {
+    const res  = await fetch(`/assistant/sessions/${sid}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action: 'reopen' }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showSessionBanner(data.detail || 'Could not reopen session.'); return; }
+    await loadSessions();
+    openSession(sid);
+  } catch(e) { showSessionBanner('Network error. Could not reopen session.'); }
+}
+
+// ── Delete ───────────────────────────────────────────────────────────────────
+async function deleteSession(sid) {
+  if (!confirm('Permanently delete this session and all its messages? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`/assistant/sessions/${sid}`, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json(); showSessionBanner(d.detail||'Delete failed.'); return; }
+    if (sid === currentSessionId) {
+      currentSessionId = null;
+      localStorage.removeItem('hleo-session');
+      const msgs = document.getElementById('chatMessages');
+      msgs.innerHTML = '';
+      // Keep context badge visible if a live search context still exists
+      const badge = document.getElementById('contextBadge');
+      if (!(_activeSearchCtx?.articles?.length > 0)) badge.classList.add('hidden');
+      const welcome = document.createElement('div');
+      welcome.id = 'chatWelcome';
+      welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
+      welcome.innerHTML = `<p class="text-sm dark:text-slate-400 text-slate-500">Session deleted. Open or create a session to continue.</p>`;
+      msgs.appendChild(welcome);
+    }
+    loadSessions();
+  } catch(e) { showSessionBanner('Network error. Could not delete session.'); }
+}
+
+function appendBubble(role, content, ctxCount=0) {
+  const welcome = document.getElementById('chatWelcome');
+  if (welcome) welcome.remove();
+
+  const msgs = document.getElementById('chatMessages');
+  const div  = document.createElement('div');
+  div.className = `flex ${role==='user' ? 'justify-end' : 'justify-start'} animate-slide-up`;
+  div.innerHTML = `
+    <div class="max-w-[85%] ${role==='user' ? 'bubble-user' : 'bubble-asst'} px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
+      ${esc(content)}
+      ${role==='assistant' && ctxCount > 0 ? `<div class="mt-2 pt-2 border-t dark:border-slate-700 border-slate-200 text-xs opacity-60 flex items-center gap-1">
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+        ${ctxCount} ${t('assistant_records_used')}
+      </div>` : ''}
+    </div>`;
+  msgs.appendChild(div);
+}
+
+function appendTyping() {
+  const msgs = document.getElementById('chatMessages');
+  const div  = document.createElement('div');
+  div.id = 'typingIndicator';
+  div.className = 'flex justify-start animate-fade-in';
+  div.innerHTML = `<div class="bubble-asst px-4 py-3 flex gap-1 items-center">
+    <span class="typing-dot w-1.5 h-1.5 rounded-full bg-slate-400 inline-block"></span>
+    <span class="typing-dot w-1.5 h-1.5 rounded-full bg-slate-400 inline-block"></span>
+    <span class="typing-dot w-1.5 h-1.5 rounded-full bg-slate-400 inline-block"></span>
+  </div>`;
+  msgs.appendChild(div);
+  scrollChat();
+}
+
+function scrollChat() {
+  const msgs = document.getElementById('chatMessages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function sendMessage(text) {
+  if (!text.trim()) return;
+  appendBubble('user', text);
+  scrollChat();
+  appendTyping();
+
+  try {
+    const res  = await fetch('/assistant/chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        session_id:     currentSessionId,
+        message:        text,
+        language:       currentLang,
+        search_context: _activeSearchCtx,   // Feature 002/003: session-scoped search context
+      }),
+    });
+    document.getElementById('typingIndicator')?.remove();
+
+    // Handle closed-session or limit errors gracefully
+    if (res.status === 409) {
+      const d = await res.json();
+      appendBubble('assistant', `⚠️ ${d.detail || 'Session unavailable.'}`);
+      loadSessions();
+      return;
+    }
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+
+    const data = await res.json();
+    if (data.error) { appendBubble('assistant', `⚠️ ${data.error}`); return; }
+
+    // Bind session_id on first message of a new session
+    if (!currentSessionId) {
+      currentSessionId = data.session_id;
+      localStorage.setItem('hleo-session', currentSessionId);
+    }
+
+    appendBubble('assistant', data.response, data.context_used_count||0);
+    if (data.context_used_count > 0) {
+      document.getElementById('contextBadge').classList.remove('hidden');
+      document.getElementById('contextBadgeText').textContent =
+        `${data.context_used_count} database record${data.context_used_count!==1?'s':''} used as context`;
+    }
+    scrollChat();
+    loadSessions();
+  } catch(err) {
+    document.getElementById('typingIndicator')?.remove();
+    appendBubble('assistant', `Error: ${err.message}`);
+  }
+}
+
+function sendSuggestion(btn) { sendMessage(btn.textContent.trim()); }
+
+document.getElementById('chatSendBtn').addEventListener('click', () => {
+  const inp = document.getElementById('chatInput');
+  const msg = inp.value.trim();
+  inp.value = '';
+  sendMessage(msg);
+});
+
+document.getElementById('chatInput').addEventListener('keydown', (e) => {
+  if (e.key==='Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const inp = e.target;
+    const msg = inp.value.trim();
+    inp.value = '';
+    sendMessage(msg);
+  }
+});
+
+// ═══════════════════ NAV COUNTS ════════════════════════════════════════════
+async function refreshNavCounts() {
+  try {
+    const res  = await fetch('/stats');
+    const data = await res.json();
+    if (data.clinical_profiles)  document.getElementById('profilesNavCount').textContent  = `(${data.clinical_profiles})`;
+    if (data.patient_experiences) document.getElementById('expNavCount').textContent       = `(${data.patient_experiences})`;
+  } catch(e) { /* silent */ }
+}
+
+// ═══════════════════ PARTNER ECOSYSTEM (RWE) ══════════════════════════════════
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let rwePartners = [];
+let rweSources  = [];
+let _rweActiveTab      = 'rwe-orgs';
+let _rweModalConfirmFn = null;
+
+// ── Sub-nav ───────────────────────────────────────────────────────────────────
+function showRweTab(sub) {
+  _rweActiveTab = sub;
+  document.querySelectorAll('.rwe-tab').forEach(b => b.classList.toggle('active', b.dataset.sub === sub));
+  document.querySelectorAll('.rwe-subpage').forEach(el => el.classList.toggle('hidden', el.id !== sub));
+  if (sub === 'rwe-orgs')       loadRwePartners();
+  if (sub === 'rwe-sources')    loadRweSources();
+  if (sub === 'rwe-contracts')  loadRweContracts();
+  if (sub === 'rwe-comparison') loadRweComparisons();
+  _rweSetHeaderAction(sub);
+}
+
+function _rweSetHeaderAction(sub) {
+  const w = document.getElementById('rweHeaderActions');
+  if (!w) return;
+  const BTN = (onclick, cls, label) =>
+    `<button onclick="${onclick}" class="px-3 py-1.5 ${cls} text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5">
+      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>${esc(label)}</button>`;
+  const map = {
+    'rwe-orgs':       BTN("openRegisterPartnerModal()", "bg-brand-500 hover:bg-brand-600", t('rwe_register_partner')),
+    'rwe-sources':    BTN("openRegisterSourceModal()",  "bg-violet-600 hover:bg-violet-700", t('rwe_register_source')),
+    'rwe-contracts':  '',
+    'rwe-comparison': BTN("openNewComparisonModal()",   "bg-teal-600 hover:bg-teal-700", t('rwe_new_comparison')),
+  };
+  w.innerHTML = map[sub] ?? '';
+}
+
+// ── Loaders ───────────────────────────────────────────────────────────────────
+async function loadRwePartners() {
+  _rweSetHeaderAction('rwe-orgs');
+  const grid  = document.getElementById('rwePartnerGrid');
+  const empty = document.getElementById('rwePartnerEmpty');
+  if (!grid) return;
+  grid.innerHTML = `<p class="text-xs dark:text-slate-600 text-slate-400 py-6 text-center col-span-3">${esc(t('rwe_loading'))}</p>`;
+  empty.classList.add('hidden');
+  try {
+    const r = await fetch('/rwe/partners');
+    rwePartners = await r.json();
+    _rweRenderStats(rwePartners);
+    if (!rwePartners.length) { grid.innerHTML = ''; empty.classList.remove('hidden'); return; }
+    grid.innerHTML = rwePartners.map(buildPartnerCard).join('');
+  } catch(e) { grid.innerHTML = `<p class="text-xs text-red-400 py-6 text-center col-span-3">${esc(e.message)}</p>`; }
+}
+
+async function loadRweSources() {
+  _rweSetHeaderAction('rwe-sources');
+  const grid  = document.getElementById('rweSourceGrid');
+  const empty = document.getElementById('rweSourceEmpty');
+  if (!grid) return;
+  grid.innerHTML = `<p class="text-xs dark:text-slate-600 text-slate-400 py-6 text-center">${esc(t('rwe_loading'))}</p>`;
+  empty.classList.add('hidden');
+  try {
+    const r = await fetch('/rwe/sources');
+    rweSources = await r.json();
+    if (!rweSources.length) { grid.innerHTML = ''; empty.classList.remove('hidden'); return; }
+    grid.innerHTML = rweSources.map(buildSourceCard).join('');
+  } catch(e) { grid.innerHTML = `<p class="text-xs text-red-400 py-6 text-center">${esc(e.message)}</p>`; }
+}
+
+async function loadRweContracts() {
+  _rweSetHeaderAction('rwe-contracts');
+  const list  = document.getElementById('rweContractsList');
+  const empty = document.getElementById('rweContractsEmpty');
+  if (!list) return;
+  list.innerHTML = `<p class="text-xs dark:text-slate-600 text-slate-400 py-6 text-center">${esc(t('rwe_loading'))}</p>`;
+  empty.classList.add('hidden');
+  try {
+    const [ra, rl] = await Promise.all([fetch('/rwe/agreements'), fetch('/rwe/licenses')]);
+    const agreements = await ra.json();
+    const licenses   = await rl.json();
+    if (!agreements.length && !licenses.length) { list.innerHTML=''; empty.classList.remove('hidden'); return; }
+    let html = '';
+    if (agreements.length) {
+      html += `<h3 class="text-xs font-semibold uppercase tracking-wider dark:text-slate-500 text-slate-400 mb-3">Agreements (${agreements.length})</h3>`;
+      html += '<div class="space-y-2 mb-6">' + agreements.map(buildAgreementRow).join('') + '</div>';
+    }
+    if (licenses.length) {
+      html += `<h3 class="text-xs font-semibold uppercase tracking-wider dark:text-slate-500 text-slate-400 mb-3">Data Licenses (${licenses.length})</h3>`;
+      html += '<div class="space-y-2">' + licenses.map(buildLicenseRow).join('') + '</div>';
+    }
+    list.innerHTML = html;
+  } catch(e) { list.innerHTML = `<p class="text-xs text-red-400 py-6 text-center">${esc(e.message)}</p>`; }
+}
+
+async function loadRweComparisons() {
+  _rweSetHeaderAction('rwe-comparison');
+  const grid  = document.getElementById('rweCompGrid');
+  const empty = document.getElementById('rweCompEmpty');
+  if (!grid) return;
+  const activeSrc = rweSources.filter(s => s.authorization_status === 'authorized');
+  _rweUpdateArchDiagram(activeSrc);
+  grid.innerHTML = `<p class="text-xs dark:text-slate-600 text-slate-400 py-4 text-center">${esc(t('rwe_loading'))}</p>`;
+  empty.classList.add('hidden');
+  try {
+    const r    = await fetch('/rwe/evidence-comparisons');
+    const data = await r.json();
+    if (!data.length) { grid.innerHTML=''; empty.classList.remove('hidden'); return; }
+    grid.innerHTML = data.map(buildComparisonCard).join('');
+  } catch(e) { grid.innerHTML = `<p class="text-xs text-red-400 py-4 text-center">${esc(e.message)}</p>`; }
+}
+
+// ── Stats strip ───────────────────────────────────────────────────────────────
+function _rweRenderStats(partners) {
+  const el = document.getElementById('rweStats');
+  if (!el) return;
+  if (!partners.length) { el.classList.add('hidden'); return; }
+  const active   = partners.filter(p => p.status === 'active').length;
+  const pipeline = partners.filter(p => !['active','declined','disabled'].includes(p.status)).length;
+  el.classList.remove('hidden');
+  el.innerHTML = [
+    [partners.length, t('rwe_stat_pipeline').replace('In ','')+'s', '#64748b'],
+    [active,          t('rwe_stat_active'),   '#4ade80'],
+    [pipeline,        t('rwe_stat_pipeline'), '#fbbf24'],
+    [rweSources.length, t('rwe_stat_sources'), '#60a5fa'],
+  ].map(([n, label]) =>
+    `<div class="dark:bg-surface-card bg-white border dark:border-surface-border border-slate-200 rounded-xl px-4 py-3 text-center">
+      <div class="text-xl font-bold dark:text-slate-200 text-slate-700">${n}</div>
+      <div class="text-xs dark:text-slate-500 text-slate-400 mt-0.5">${esc(label)}</div>
+    </div>`
+  ).join('');
+}
+
+// ── Card builders ─────────────────────────────────────────────────────────────
+function buildPartnerCard(p) {
+  const PTYPE = {forum:'ptype_forum',patient_org:'ptype_patient_org',
+    healthcare_community:'ptype_healthcare_community',research_network:'ptype_research_network'};
+  const ITYPE_KEY = {api:'itype_api',licensed_dataset:'itype_licensed_dataset',
+    rss:'itype_rss',manual_import:'itype_manual_import',research_collaboration:'itype_research_collaboration'};
+  const tBadge = p.partner_type
+    ? `<span class="rwe-pill dark:bg-slate-700/40 bg-slate-100 dark:text-slate-400 text-slate-500">${esc(t(PTYPE[p.partner_type]||''))}</span>` : '';
+  const iBadge = p.integration_type
+    ? `<span class="rwe-pill dark:bg-blue-500/10 bg-blue-50 dark:text-blue-400 text-blue-600">${esc(t(ITYPE_KEY[p.integration_type]||''))}</span>` : '';
+  return `<div class="partner-card p-5">
+    <div class="flex items-start justify-between gap-2 mb-3">
+      <div class="min-w-0">
+        <div class="font-semibold text-sm dark:text-slate-100 text-slate-800 leading-snug">${esc(p.name)}</div>
+        <div class="flex flex-wrap gap-1.5 mt-1.5">${tBadge}${iBadge}</div>
+      </div>
+      <div class="flex-shrink-0">${_partnerPill(p.status)}</div>
+    </div>
+    ${_lcBar(p.status)}
+    <div class="mt-3 space-y-1.5 text-xs">
+      ${p.description ? `<p class="dark:text-slate-400 text-slate-500 line-clamp-2 leading-relaxed">${esc(p.description)}</p>` : ''}
+      ${p.website_url ? `<a href="${esc(p.website_url)}" target="_blank" rel="noopener" class="dark:text-brand-400 text-brand-500 hover:underline truncate block">${esc(p.website_url.replace(/^https?:\/\//,''))}</a>` : ''}
+      ${p.last_contact_date ? `<p class="dark:text-slate-600 text-slate-400">${esc(t('rwe_last_contact'))}: ${p.last_contact_date.slice(0,10)}</p>` : ''}
+      ${p.next_followup_date ? `<p class="dark:text-amber-500/70 text-amber-600 text-[.65rem]">${esc(t('rwe_next_followup'))}: ${p.next_followup_date.slice(0,10)}</p>` : ''}
+    </div>
+    <div class="mt-4 pt-3 border-t dark:border-surface-border border-slate-100 flex flex-wrap gap-1.5">
+      <button onclick="openAddContactModal('${esc(p.partner_id)}','${esc(p.name).replace(/'/g,"\\'")}')"
+        class="text-xs px-2.5 py-1 dark:bg-surface-hover bg-slate-50 dark:text-slate-400 text-slate-500 dark:hover:text-slate-300 hover:text-slate-700 rounded-lg border dark:border-surface-border border-slate-200 transition-colors">
+        + ${esc(t('rwe_add_contact'))}
+      </button>
+      <button onclick="openAddAgreementModal('${esc(p.partner_id)}','${esc(p.name).replace(/'/g,"\\'")}')"
+        class="text-xs px-2.5 py-1 dark:bg-surface-hover bg-slate-50 dark:text-slate-400 text-slate-500 dark:hover:text-slate-300 hover:text-slate-700 rounded-lg border dark:border-surface-border border-slate-200 transition-colors">
+        + ${esc(t('rwe_add_agreement'))}
+      </button>
+      ${_lcCanAdvance(p.status)
+        ? `<button onclick="advancePartnerStage('${esc(p.partner_id)}','${esc(p.status)}')"
+            class="text-xs px-2.5 py-1 bg-brand-500/10 dark:text-brand-400 text-brand-600 hover:bg-brand-500/20 rounded-lg border border-brand-500/20 transition-colors ml-auto">
+            ${esc(t('rwe_advance_stage'))} →
+          </button>`
+        : ''}
+    </div>
+  </div>`;
+}
+
+function buildSourceCard(s) {
+  const pName = esc(rwePartners.find(p => p.partner_id === s.partner_id)?.name || s.partner_id);
+  const ikey  = {api:'itype_api',licensed_dataset:'itype_licensed_dataset',rss:'itype_rss',
+    manual_import:'itype_manual_import',research_collaboration:'itype_research_collaboration'};
+  const iBadge= s.integration_type
+    ? `<span class="rwe-pill dark:bg-blue-500/10 bg-blue-50 dark:text-blue-400 text-blue-600">${esc(t(ikey[s.integration_type]||s.integration_type))}</span>` : '';
+  const cBadge= s.data_category
+    ? `<span class="rwe-pill dark:bg-slate-700/40 bg-slate-100 dark:text-slate-400 text-slate-500">${esc(s.data_category.replace(/_/g,' '))}</span>` : '';
+  return `<div class="rwe-row-card">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1.5">
+          <span class="font-semibold text-sm dark:text-slate-100 text-slate-800">${esc(s.name)}</span>
+          ${iBadge}${cBadge}
+        </div>
+        <div class="flex flex-wrap gap-3 text-xs dark:text-slate-500 text-slate-400">
+          <span>${esc(t('rwe_partner_label'))}: <strong class="dark:text-slate-300 text-slate-600">${pName}</strong></span>
+          ${s.evidence_level ? `<span>${esc(s.evidence_level)}</span>` : ''}
+          ${s.geographic_scope ? `<span>&#x1F30D; ${esc(s.geographic_scope)}</span>` : ''}
+          ${s.estimated_records ? `<span>~${Number(s.estimated_records).toLocaleString()} records</span>` : ''}
+        </div>
+        ${s.description ? `<p class="text-xs dark:text-slate-500 text-slate-400 mt-2 leading-relaxed line-clamp-2">${esc(s.description)}</p>` : ''}
+      </div>
+      <div class="flex flex-col items-end gap-1.5 flex-shrink-0">
+        ${_sourcePill(s.status)}
+        ${_authPill(s.authorization_status)}
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildAgreementRow(a) {
+  const ATYPE = {mou:'agmt_mou',data_sharing_agreement:'agmt_dsa',nda:'agmt_nda',
+    research_collaboration_agreement:'agmt_rca',api_license:'agmt_api_license'};
+  const ASTATUS = {draft:'agmt_draft',under_review:'agmt_under_review',negotiating:'agmt_negotiating',
+    signed:'agmt_signed',active:'agmt_active',expired:'agmt_expired',terminated:'agmt_terminated'};
+  const APILL = {draft:'pill-draft',under_review:'pill-review',negotiating:'pill-review',
+    signed:'pill-signed',active:'pill-active',expired:'pill-expired',terminated:'pill-declined'};
+  const partner = rwePartners.find(p => p.partner_id === a.partner_id);
+  return `<div class="rwe-row-card">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap mb-1">
+          <span class="font-medium text-sm dark:text-slate-200 text-slate-700">${esc(a.title)}</span>
+          <span class="rwe-pill dark:bg-slate-700/40 bg-slate-100 dark:text-slate-400 text-slate-500">${esc(t(ATYPE[a.agreement_type]||a.agreement_type||''))}</span>
+          <span class="rwe-pill ${APILL[a.status]||''}">${esc(t(ASTATUS[a.status])||a.status)}</span>
+        </div>
+        <div class="flex flex-wrap gap-3 text-xs dark:text-slate-500 text-slate-400">
+          ${partner ? `<span>${esc(t('rwe_partner_label'))}: ${esc(partner.name)}</span>` : ''}
+          ${a.effective_from  ? `<span>From: ${a.effective_from.slice(0,10)}</span>` : ''}
+          ${a.effective_until ? `<span>Until: ${a.effective_until.slice(0,10)}</span>` : ''}
+          <span>v${esc(a.version||'1.0')}</span>
+        </div>
+        ${a.summary ? `<p class="text-xs dark:text-slate-500 text-slate-400 mt-1 italic">${esc(a.summary)}</p>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildLicenseRow(l) {
+  const LTYPE = {cc_by:'lic_cc_by',cc_by_nc:'lic_cc_by_nc',proprietary:'lic_proprietary',
+    research_only:'lic_research_only',open_data:'lic_open_data',custom:'lic_custom'};
+  const source = rweSources.find(s => s.source_id === l.source_id);
+  return `<div class="rwe-row-card">
+    <div class="flex items-center justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap mb-1">
+          <span class="font-medium text-sm dark:text-slate-200 text-slate-700">${esc(t(LTYPE[l.license_type]||l.license_type))}</span>
+          <span class="rwe-pill ${l.status==='active'?'pill-active':'pill-expired'}">${esc(l.status)}</span>
+        </div>
+        <div class="flex flex-wrap gap-3 text-xs dark:text-slate-500 text-slate-400">
+          ${source ? `<span>Source: ${esc(source.name)}</span>` : ''}
+          ${(l.geographic_restrictions||[]).length ? `<span>Geo: ${l.geographic_restrictions.join(', ')}</span>` : ''}
+          ${l.valid_until ? `<span>Until: ${l.valid_until.slice(0,10)}</span>` : ''}
+        </div>
+        ${(l.restrictions||[]).length
+          ? `<div class="flex flex-wrap gap-1 mt-2">${l.restrictions.map(r=>`<span class="text-[.6rem] dark:bg-red-900/20 bg-red-50 dark:text-red-400 text-red-600 px-1.5 py-0.5 rounded">${esc(r.replace(/_/g,' '))}</span>`).join('')}</div>`
+          : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildComparisonCard(c) {
+  const sc = (c.scientific_profile_ids||[]).length;
+  const cc = (c.community_source_ids  ||[]).length;
+  const CPILL = {draft:'pill-draft',complete:'pill-active',archived:'pill-disabled'};
+  return `<div class="rwe-row-card">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0 flex-1">
+        <div class="font-semibold text-sm dark:text-slate-100 text-slate-800 mb-1.5">${esc(c.query_topic)}</div>
+        <div class="flex flex-wrap gap-3 text-xs dark:text-slate-500 text-slate-400">
+          <span>${(c.dimensions||[]).length} dimensions</span>
+          <span>${sc} scientific profile${sc!==1?'s':''}</span>
+          <span>${cc} community source${cc!==1?'s':''}</span>
+          <span>Framework: ${esc(c.comparison_framework)}</span>
+        </div>
+        ${(c.dimensions||[]).length
+          ? `<div class="flex flex-wrap gap-1 mt-2">${c.dimensions.map(d=>`<span class="text-[.6rem] dark:bg-surface-hover bg-slate-50 dark:text-slate-400 text-slate-500 px-1.5 py-0.5 rounded border dark:border-surface-border border-slate-200">${esc(d.replace(/_/g,' '))}</span>`).join('')}</div>`
+          : ''}
+      </div>
+      <span class="rwe-pill ${CPILL[c.status]||''} flex-shrink-0">${esc(c.status)}</span>
+    </div>
+  </div>`;
+}
+
+// ── Architecture diagram live update ─────────────────────────────────────────
+function _rweUpdateArchDiagram(activeSrc) {
+  const pillar = document.getElementById('archCommunityPillar');
+  if (!pillar) return;
+  const title = `<div class="text-xs font-semibold dark:text-slate-300 text-slate-600 mb-2">${esc(t('arch_comm_title'))}</div>`;
+  if (!activeSrc.length) {
+    pillar.innerHTML = title +
+      `<div class="arch-source-row dark:text-slate-600 text-slate-400 italic"><div class="arch-source-dot arch-dot-pending"></div>${esc(t('arch_awaiting'))}</div>
+       <div class="text-[.65rem] dark:text-slate-700 text-slate-300 mt-1.5">${esc(t('arch_awaiting_sub'))}</div>`;
+  } else {
+    pillar.innerHTML = title +
+      activeSrc.map(s=>`<div class="arch-source-row"><div class="arch-source-dot arch-dot-live"></div>${esc(s.name)}</div>`).join('');
+  }
+}
+
+// ── Lifecycle helpers ─────────────────────────────────────────────────────────
+const _LC_STEPS  = ['proposed','contacted','in_discussion','legal_review','approved','active'];
+const _LC_ABBREV = {proposed:'P',contacted:'C',in_discussion:'D',legal_review:'L',approved:'A',active:'\u2713'};
+const _LC_NEXT_STATE = {proposed:'contacted',contacted:'in_discussion',in_discussion:'legal_review',
+  legal_review:'approved',approved:'active'};
+
+function _lcBar(status) {
+  if (status === 'declined' || status === 'disabled') {
+    const cls = status === 'declined' ? 'lc-declined' : 'lc-disabled';
+    return `<div class="flex items-center gap-2 mt-2">
+      <div class="lc-node ${cls}">${status==='declined'?'\u2717':'\u25CB'}</div>
+      <span class="text-xs ${status==='declined'?'dark:text-red-400 text-red-500':'dark:text-slate-500 text-slate-400'}">${esc(t('lc_'+status))}</span>
+    </div>`;
+  }
+  const cur = _LC_STEPS.indexOf(status);
+  return '<div class="lc-bar mt-2" title="' + esc(t('lc_'+status)) + '">' +
+    _LC_STEPS.map((step, i) => {
+      const nc = i < cur ? 'lc-done' : i === cur ? 'lc-curr' : 'lc-next';
+      const lc = i < cur ? 'lc-done' : 'lc-next';
+      const dot = `<div class="lc-node ${nc}" title="${esc(t('lc_'+step))}">${esc(_LC_ABBREV[step]||step[0].toUpperCase())}</div>`;
+      return i < _LC_STEPS.length - 1 ? dot + `<div class="lc-line ${lc}"></div>` : dot;
+    }).join('') +
+  '</div>';
+}
+
+function _lcCanAdvance(status) { return !!_LC_NEXT_STATE[status]; }
+
+// ── Status pills ──────────────────────────────────────────────────────────────
+const _LC_PILL_CLS = {proposed:'pill-proposed',contacted:'pill-contacted',in_discussion:'pill-discussion',
+  legal_review:'pill-legal',approved:'pill-approved',active:'pill-active',declined:'pill-declined',disabled:'pill-disabled'};
+function _partnerPill(s) {
+  return `<span class="rwe-pill ${_LC_PILL_CLS[s]||''}">${esc(t('lc_'+s)||s)}</span>`;
+}
+function _sourcePill(s) {
+  const cls={pending:'pill-proposed',approved:'pill-approved',active:'pill-active',paused:'pill-draft',suspended:'pill-declined'};
+  return `<span class="rwe-pill ${cls[s]||''}">${esc(t('src_'+s)||s)}</span>`;
+}
+function _authPill(s) {
+  const cls={authorized:'pill-auth',unauthorized:'pill-unauth',expired:'pill-expired',revoked:'pill-declined'};
+  return `<span class="rwe-pill ${cls[s]||''}">${esc(t('auth_'+s)||s)}</span>`;
+}
+
+// ── Advance stage ─────────────────────────────────────────────────────────────
+async function advancePartnerStage(pid, cur) {
+  const next = _LC_NEXT_STATE[cur];
+  if (!next) return;
+  try {
+    const r = await fetch('/rwe/partners/' + pid, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({status: next}),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Update failed'); }
+    loadRwePartners();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Modal system ──────────────────────────────────────────────────────────────
+function openRweModal(title, bodyHTML, confirmLabel, onConfirm) {
+  document.getElementById('rweModalTitle').textContent      = title;
+  document.getElementById('rweModalBody').innerHTML         = bodyHTML;
+  document.getElementById('rweModalConfirmBtn').textContent = confirmLabel;
+  _rweModalConfirmFn = onConfirm;
+  const m = document.getElementById('rweModal');
+  m.style.display = 'flex';
+  m.classList.remove('hidden');
+}
+function closeRweModal() {
+  const m = document.getElementById('rweModal');
+  m.style.display = 'none';
+  m.classList.add('hidden');
+  _rweModalConfirmFn = null;
+}
+function _rweConfirm() { if (_rweModalConfirmFn) _rweModalConfirmFn(); }
+
+// ── Register Partner ──────────────────────────────────────────────────────────
+function openRegisterPartnerModal() {
+  const PTYPES  = ['forum','patient_org','healthcare_community','research_network'];
+  const ITYPES  = ['api','licensed_dataset','rss','manual_import','research_collaboration'];
+  const body = `
+    <div><label class="rwe-label">${esc(t('form_name'))} *</label><input id="pf_name" class="rwe-input"></div>
+    <div><label class="rwe-label">${esc(t('form_short_name'))}</label><input id="pf_sname" class="rwe-input" placeholder="e.g. AlopeciaForum"></div>
+    <div><label class="rwe-label">${esc(t('form_org_type'))} *</label>
+      <select id="pf_type" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${PTYPES.map(v=>`<option value="${v}">${esc(t('ptype_'+v))}</option>`).join('')}
+      </select></div>
+    <div><label class="rwe-label">${esc(t('form_integration_type'))}</label>
+      <select id="pf_itype" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${ITYPES.map(v=>`<option value="${v}">${esc(t('itype_'+v))}</option>`).join('')}
+      </select></div>
+    <div><label class="rwe-label">${esc(t('form_website'))}</label><input id="pf_url" class="rwe-input" placeholder="https://"></div>
+    <div><label class="rwe-label">${esc(t('form_description'))}</label><textarea id="pf_desc" rows="2" class="rwe-input" style="resize:vertical"></textarea></div>
+    <div><label class="rwe-label">${esc(t('form_notes'))}</label><textarea id="pf_notes" rows="2" class="rwe-input" style="resize:vertical"></textarea></div>`;
+  openRweModal(t('rwe_register_partner'), body, t('form_save'), submitRegisterPartner);
+}
+async function submitRegisterPartner() {
+  const name = document.getElementById('pf_name')?.value?.trim();
+  const type = document.getElementById('pf_type')?.value;
+  if (!name || !type) { alert('Name and organisation type are required.'); return; }
+  try {
+    const r = await fetch('/rwe/partners', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name, partner_type: type,
+        short_name:        document.getElementById('pf_sname')?.value?.trim()||undefined,
+        integration_type:  document.getElementById('pf_itype')?.value||undefined,
+        website_url:       document.getElementById('pf_url')?.value?.trim()||undefined,
+        description:       document.getElementById('pf_desc')?.value?.trim()||undefined,
+        internal_notes:    document.getElementById('pf_notes')?.value?.trim()||undefined,
+      }),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Create failed'); }
+    closeRweModal(); loadRwePartners();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Register Source ───────────────────────────────────────────────────────────
+function openRegisterSourceModal() {
+  const ap = rwePartners.filter(p => ['approved','active'].includes(p.status));
+  if (!ap.length) { alert('Advance a partner to Approved status first.'); return; }
+  const ITYPES = ['api','licensed_dataset','rss','manual_import','research_collaboration'];
+  const CATS   = ['patient_experiences','clinical_outcomes','survey_data','discussion_posts'];
+  const EVLVLS = ['anecdotal','observational','survey','registry'];
+  const body = `
+    <div><label class="rwe-label">${esc(t('rwe_partner_label'))} *</label>
+      <select id="sf_partner" class="rwe-input">${ap.map(p=>`<option value="${esc(p.partner_id)}">${esc(p.name)}</option>`).join('')}</select></div>
+    <div><label class="rwe-label">${esc(t('form_name'))} *</label><input id="sf_name" class="rwe-input"></div>
+    <div><label class="rwe-label">${esc(t('form_integration_type'))} *</label>
+      <select id="sf_itype" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${ITYPES.map(v=>`<option value="${v}">${esc(t('itype_'+v))}</option>`).join('')}
+      </select></div>
+    <div><label class="rwe-label">${esc(t('form_data_category'))}</label>
+      <select id="sf_cat" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${CATS.map(v=>`<option value="${v}">${esc(v.replace(/_/g,' '))}</option>`).join('')}
+      </select></div>
+    <div><label class="rwe-label">${esc(t('form_evidence_level'))}</label>
+      <select id="sf_ev" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${EVLVLS.map(v=>`<option value="${v}">${esc(v)}</option>`).join('')}
+      </select></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="rwe-label">${esc(t('form_geo_scope'))}</label><input id="sf_geo" class="rwe-input" placeholder="EU, Global…"></div>
+      <div><label class="rwe-label">${esc(t('form_est_records'))}</label><input id="sf_recs" type="number" class="rwe-input" placeholder="0" min="0"></div>
+    </div>
+    <div><label class="rwe-label">${esc(t('form_description'))}</label><textarea id="sf_desc" rows="2" class="rwe-input" style="resize:vertical"></textarea></div>`;
+  openRweModal(t('rwe_register_source'), body, t('form_save'), submitRegisterSource);
+}
+async function submitRegisterSource() {
+  const pid  = document.getElementById('sf_partner')?.value;
+  const name = document.getElementById('sf_name')?.value?.trim();
+  const it   = document.getElementById('sf_itype')?.value;
+  if (!pid || !name || !it) { alert('Partner, name, and integration type are required.'); return; }
+  try {
+    const r = await fetch('/rwe/sources', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        partner_id: pid, name, integration_type: it,
+        data_category:    document.getElementById('sf_cat')?.value||undefined,
+        evidence_level:   document.getElementById('sf_ev')?.value||undefined,
+        geographic_scope: document.getElementById('sf_geo')?.value?.trim()||undefined,
+        estimated_records:parseInt(document.getElementById('sf_recs')?.value)||undefined,
+        description:      document.getElementById('sf_desc')?.value?.trim()||undefined,
+      }),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Create failed'); }
+    const r2 = await fetch('/rwe/sources'); rweSources = await r2.json();
+    closeRweModal(); loadRweSources();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Add Contact ───────────────────────────────────────────────────────────────
+function openAddContactModal(pid, pname) {
+  const body = `
+    <p class="text-xs dark:text-slate-500 text-slate-400 -mt-2 mb-2">${esc(t('rwe_partner_label'))}: <strong>${esc(pname)}</strong></p>
+    <div><label class="rwe-label">${esc(t('contact_full_name'))} *</label><input id="cf_name" class="rwe-input"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="rwe-label">${esc(t('contact_role'))}</label><input id="cf_role" class="rwe-input" placeholder="Data Officer"></div>
+      <div><label class="rwe-label">${esc(t('contact_dept'))}</label><input id="cf_dept" class="rwe-input"></div>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="rwe-label">${esc(t('contact_email'))}</label><input id="cf_email" type="email" class="rwe-input"></div>
+      <div><label class="rwe-label">${esc(t('contact_phone'))}</label><input id="cf_phone" class="rwe-input"></div>
+    </div>
+    <label class="flex items-center gap-2 text-xs dark:text-slate-300 text-slate-600 cursor-pointer">
+      <input id="cf_prim" type="checkbox" class="rounded"> ${esc(t('contact_primary'))}
+    </label>`;
+  openRweModal(t('rwe_add_contact'), body, t('form_save'), () => _submitContact(pid));
+}
+async function _submitContact(pid) {
+  const name = document.getElementById('cf_name')?.value?.trim();
+  if (!name) { alert('Full name is required.'); return; }
+  try {
+    const r = await fetch(`/rwe/partners/${pid}/contacts`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        full_name:  name,
+        role:       document.getElementById('cf_role')?.value?.trim()||undefined,
+        department: document.getElementById('cf_dept')?.value?.trim()||undefined,
+        email:      document.getElementById('cf_email')?.value?.trim()||undefined,
+        phone:      document.getElementById('cf_phone')?.value?.trim()||undefined,
+        is_primary: document.getElementById('cf_prim')?.checked||false,
+      }),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Create failed'); }
+    closeRweModal(); loadRwePartners();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Add Agreement ─────────────────────────────────────────────────────────────
+function openAddAgreementModal(pid, pname) {
+  const ATYPES = ['mou','data_sharing_agreement','nda','research_collaboration_agreement','api_license'];
+  const AKEYS  = {mou:'agmt_mou',data_sharing_agreement:'agmt_dsa',nda:'agmt_nda',
+    research_collaboration_agreement:'agmt_rca',api_license:'agmt_api_license'};
+  const body = `
+    <p class="text-xs dark:text-slate-500 text-slate-400 -mt-2 mb-2">${esc(t('rwe_partner_label'))}: <strong>${esc(pname)}</strong></p>
+    <div><label class="rwe-label">${esc(t('form_agreement_type'))} *</label>
+      <select id="af_type" class="rwe-input"><option value="">&#x2014; select &#x2014;</option>
+        ${ATYPES.map(v=>`<option value="${v}">${esc(t(AKEYS[v]||v))}</option>`).join('')}
+      </select></div>
+    <div><label class="rwe-label">${esc(t('form_title'))} *</label><input id="af_title" class="rwe-input"></div>
+    <div><label class="rwe-label">${esc(t('form_summary'))}</label><textarea id="af_sum" rows="3" class="rwe-input" style="resize:vertical"></textarea></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="rwe-label">Effective from</label><input id="af_from" type="date" class="rwe-input"></div>
+      <div><label class="rwe-label">Effective until</label><input id="af_until" type="date" class="rwe-input"></div>
+    </div>
+    <div><label class="rwe-label">${esc(t('form_notes'))}</label><textarea id="af_notes" rows="2" class="rwe-input" style="resize:vertical"></textarea></div>`;
+  openRweModal(t('rwe_add_agreement'), body, t('form_save'), () => _submitAgreement(pid));
+}
+async function _submitAgreement(pid) {
+  const type  = document.getElementById('af_type')?.value;
+  const title = document.getElementById('af_title')?.value?.trim();
+  if (!type || !title) { alert('Agreement type and title are required.'); return; }
+  try {
+    const r = await fetch(`/rwe/partners/${pid}/agreements`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        agreement_type: type, title,
+        summary:        document.getElementById('af_sum')?.value?.trim()||undefined,
+        effective_from: document.getElementById('af_from')?.value||undefined,
+        effective_until:document.getElementById('af_until')?.value||undefined,
+        notes:          document.getElementById('af_notes')?.value?.trim()||undefined,
+      }),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Create failed'); }
+    closeRweModal(); loadRweContracts();
+    showRweTab('rwe-contracts');
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── New Comparison ────────────────────────────────────────────────────────────
+function openNewComparisonModal() {
+  const DIMS = ['efficacy','safety','adherence','tolerability','quality_of_life'];
+  const body = `
+    <div><label class="rwe-label">${esc(t('cmp_topic_label'))} *</label>
+      <input id="cmpf_topic" class="rwe-input" placeholder="${esc(t('cmp_topic_placeholder'))}"></div>
+    <div>
+      <label class="rwe-label">${esc(t('cmp_dimensions_label'))}</label>
+      <div class="space-y-1.5 mt-1">
+        ${DIMS.map(d=>`<label class="flex items-center gap-2 text-xs dark:text-slate-300 text-slate-600 cursor-pointer">
+          <input type="checkbox" id="cmpd_${d}" checked class="rounded">${esc(d.replace(/_/g,' '))}
+        </label>`).join('')}
+      </div>
+    </div>`;
+  openRweModal(t('rwe_new_comparison'), body, t('form_save'), _submitComparison);
+}
+async function _submitComparison() {
+  const topic = document.getElementById('cmpf_topic')?.value?.trim();
+  if (!topic) { alert('Clinical topic is required.'); return; }
+  const DIMS = ['efficacy','safety','adherence','tolerability','quality_of_life'];
+  const dims  = DIMS.filter(d => document.getElementById('cmpd_'+d)?.checked);
+  try {
+    const r = await fetch('/rwe/evidence-comparisons', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query_topic: topic, dimensions: dims}),
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'Create failed'); }
+    closeRweModal(); loadRweComparisons();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+applyTranslations();   // apply saved language preference on page load
+refreshNavCounts();
+if (currentSessionId) {
+  // pre-load session silently — user can switch to assistant tab
+}
+const urlQ = new URLSearchParams(location.search).get('q');
+if (urlQ) {
+  document.getElementById('searchInput').value = urlQ;
+  document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+}
+</script>
+</body>
+</html>
