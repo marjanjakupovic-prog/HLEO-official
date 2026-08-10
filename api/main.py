@@ -86,7 +86,7 @@ def _to_dict(obj: Any) -> Any:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/health")
@@ -126,12 +126,55 @@ def stats(db: Session = Depends(get_db)):
 
 @app.get("/search")
 def search(q: str = Query(..., description="Search query")):
-    """Collect results from all sources — no LLM, returns raw data immediately."""
+    """Collect results from all sources.
+
+    When OPENAI_API_KEY is available, uses the relational pipeline
+    (Level 2): AI-extracted clinical relation → per-source structured
+    queries → hard filter → LLM relational judge re-ranking. Falls back
+    to the plain keyword pipeline (no LLM) otherwise, so the feature
+    never breaks the Ricerca Specifica.
+    """
     from core.pipeline import HLEOPipeline
 
-    # ── Orchestrate: detect language, translate to scientific English if needed ──
-    orch = _orchestrator.process(q)
+    # ── Relational mode (LLM available) ──────────────────────────────────────
+    try:
+        from core.relational_search import RelationalSearch
+        rs = RelationalSearch()
+        if rs._client is not None:
+            rel_out = rs.search(q)
+            if rel_out is not None:
+                pubmed         = [_to_dict(a) for a in rel_out["pubmed"]]
+                europepmc      = [_to_dict(a) for a in rel_out["europepmc"]]
+                clinicaltrials = [_to_dict(a) for a in rel_out["clinicaltrials"]]
+                reddit_raw     = [_to_dict(p) for p in rel_out["reddit"]]
+                rel = rel_out["relation"]
+                orch_dict = {
+                    "original_query":      q,
+                    "search_query":        rel.scientific_query or q,
+                    "detected_language":   "",
+                    "translation_applied": True,
+                    "confidence":          1.0,
+                    "relation":            rel.to_dict(),
+                    "retrieval_stats":     rel_out["stats"],
+                }
+                return {
+                    "query":          q,
+                    "orchestration":  orch_dict,
+                    "llm_extraction": True,
+                    "totals": {
+                        "pubmed":         len(pubmed),
+                        "europepmc":      len(europepmc),
+                        "clinicaltrials": len(clinicaltrials),
+                        "reddit":         len(reddit_raw),
+                    },
+                    "pubmed": pubmed, "europepmc": europepmc,
+                    "clinicaltrials": clinicaltrials, "reddit": reddit_raw,
+                }
+    except Exception as exc:
+        logger.warning(f"/search relational mode failed ({exc}) — falling back to keyword pipeline.")
 
+    # ── Fallback: plain keyword pipeline (orchestrator + collect) ────────────
+    orch = _orchestrator.process(q)
     pipeline = HLEOPipeline()
     raw = pipeline.collect(orch.search_query)
 
