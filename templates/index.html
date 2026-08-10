@@ -1635,16 +1635,10 @@ async function loadProfiles() {
   const skel  = document.getElementById('profilesSkeleton');
   skel.classList.remove('hidden'); list.innerHTML=''; empty.classList.add('hidden');
 
-  // If a search was run but the pipeline hasn't completed yet, show empty state immediately
-  if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length === 0) {
-    skel.classList.add('hidden');
-    document.getElementById('profilesTotalBadge').textContent = '';
-    document.getElementById('profilesNavCount').textContent   = '';
-    empty.classList.remove('hidden');
-    return;
-  }
-
-  // Build URL: filter by current search episode_ids when available
+  // Build URL: filter by current search episode_ids when available.
+  // When _currentSearchEpisodeIds is null (cold load) or [] (search run,
+  // pipeline not yet completed) we fetch all saved profiles instead of
+  // short-circuiting to the empty state — existing profiles must stay visible.
   let url = '/profiles?limit=50';
   if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length > 0) {
     url += `&episode_ids=${encodeURIComponent(_currentSearchEpisodeIds.join(','))}`;
