@@ -4,9 +4,10 @@ Endpoints:
   GET  /                     → dashboard UI
   GET  /health               → key/version status
   GET  /stats                → DB row counts
-  GET  /search?q=            → fast collect from all sources (no LLM)
-  POST /pipeline/run?q=      → collect + LLM-extract articles → DB
-  GET  /profiles?limit=      → saved clinical profiles
+  GET  /search?q=&mode=      → scientific (relational, L2) or global (keyword) collect
+  POST /pipeline/run?q=&mode=→ collect + LLM-extract articles → DB (scientific: relevant-only)
+  POST /synthesis            → Level 3 scientific synthesis (reuses L2 relevant articles, no re-search)
+  GET  /profiles?limit=       → saved clinical profiles
   POST /experiences/ingest?q= → collect Reddit + LLM-extract patient experiences → DB
   GET  /experiences?limit=   → saved patient experiences
   POST /assistant/chat       → AI Clinical Assistant (RAG over DB)
@@ -82,6 +83,88 @@ def _to_dict(obj: Any) -> Any:
         return str(obj)
 
 
+def _article_from_pubmed(item: Any) -> dict:
+    return {
+        "source":      "pubmed",
+        "episode_id":  f"pubmed-{item.pmid}",
+        "title":        item.title,
+        "abstract":     item.abstract or "",
+        "url":          f"https://pubmed.ncbi.nlm.nih.gov/{item.pmid}/",
+        "external_id":  item.pmid,
+        "journal":      (item.metadata or {}).get("journal", ""),
+        "pub_year":     str((item.metadata or {}).get("pubdate", ""))[:4],
+        "meta":         item.metadata or {},
+    }
+
+
+def _article_from_europepmc(item: Any) -> dict:
+    ep_id = (item.metadata or {}).get("id") or (item.doi or "").replace("/", "-")
+    return {
+        "source":      "europepmc",
+        "episode_id":  f"europepmc-{ep_id}",
+        "title":        item.title,
+        "abstract":     item.abstract or "",
+        "url":          f"https://doi.org/{item.doi}" if item.doi else "",
+        "external_id":  item.doi or ep_id,
+        "journal":      (item.metadata or {}).get("journal", ""),
+        "pub_year":     str(item.year or ""),
+        "meta":         item.metadata or {},
+    }
+
+
+def _article_from_clinicaltrials(item: Any) -> dict:
+    nct = (item.metadata or {}).get("nct_id", "unknown")
+    return {
+        "source":      "clinicaltrials",
+        "episode_id":  f"clinicaltrial-{nct}",
+        "title":        item.title,
+        "abstract":     item.abstract or "",
+        "url":          f"https://clinicaltrials.gov/study/{nct}" if nct != "unknown" else "",
+        "external_id":  nct,
+        "journal":      "",
+        "pub_year":     str(item.year or ""),
+        "meta":         item.metadata or {},
+    }
+
+
+def _articles_from_raw(raw: dict) -> list[dict]:
+    """Build the article list from a HLEOPipeline.collect() result (global mode)."""
+    articles: list[dict] = []
+    for item in raw["pubmed"]:
+        articles.append(_article_from_pubmed(item))
+    for item in raw["europepmc"]:
+        articles.append(_article_from_europepmc(item))
+    for item in raw["clinicaltrials"]:
+        articles.append(_article_from_clinicaltrials(item))
+    return articles
+
+
+def _articles_from_relational(rel_out: dict, only_relevant: bool = True) -> list[dict]:
+    """Build the article list from a RelationalSearch result.
+
+    In scientific mode, profiles are extracted ONLY from articles the relational
+    judge labeled `relevant` (the core rule). relevance_label/score/reason are
+    carried into validation_payload so each profile stays anchored to the relation.
+    """
+    articles: list[dict] = []
+    for source_key, builder in (
+        ("pubmed", _article_from_pubmed),
+        ("europepmc", _article_from_europepmc),
+        ("clinicaltrials", _article_from_clinicaltrials),
+    ):
+        for item in rel_out.get(source_key, []):
+            label = (getattr(item, "metadata", None) or {}).get("relevance_label")
+            if only_relevant and label != "relevant":
+                continue
+            art = builder(item)
+            md = getattr(item, "metadata", None) or {}
+            art["relevance_label"]  = md.get("relevance_label")
+            art["relevance_score"]  = md.get("relevance_score")
+            art["relevance_reason"] = md.get("relevance_reason")
+            articles.append(art)
+    return articles
+
+
 # ── Core routes ───────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -125,55 +208,73 @@ def stats(db: Session = Depends(get_db)):
 # ── Search (fast, no LLM) ─────────────────────────────────────────────────────
 
 @app.get("/search")
-def search(q: str = Query(..., description="Search query")):
+def search(q: str = Query(..., description="Search query"),
+           mode: str = Query("scientific", description="Search mode: 'scientific' (relational, Level 2) | 'global' (broad keyword).")):
     """Collect results from all sources.
 
-    When OPENAI_API_KEY is available, uses the relational pipeline
-    (Level 2): AI-extracted clinical relation → per-source structured
-    queries → hard filter → LLM relational judge re-ranking. Falls back
-    to the plain keyword pipeline (no LLM) otherwise, so the feature
-    never breaks the Ricerca Specifica.
+    Two modes:
+      - scientific (default): relational pipeline (Level 2) — AI-extracted
+        clinical relation → per-source structured queries → hard filter →
+        LLM relational judge re-ranking. Requires OPENAI_API_KEY (503 if absent,
+        no silent keyword fallback, so scientific profiles stay relation-pure).
+      - global: broad exploratory keyword pipeline (orchestrator + collect),
+        no relational filter, all sources including Reddit.
+
+    When called without `mode`, defaults to scientific (preserves prior behavior
+    when the LLM key is available).
     """
     from core.pipeline import HLEOPipeline
 
-    # ── Relational mode (LLM available) ──────────────────────────────────────
-    try:
+    if mode == "scientific":
         from core.relational_search import RelationalSearch
         rs = RelationalSearch()
-        if rs._client is not None:
+        if rs._client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Scientific mode requires OPENAI_API_KEY (relational search unavailable). Use Global mode.",
+            )
+        try:
             rel_out = rs.search(q)
-            if rel_out is not None:
-                pubmed         = [_to_dict(a) for a in rel_out["pubmed"]]
-                europepmc      = [_to_dict(a) for a in rel_out["europepmc"]]
-                clinicaltrials = [_to_dict(a) for a in rel_out["clinicaltrials"]]
-                reddit_raw     = [_to_dict(p) for p in rel_out["reddit"]]
-                rel = rel_out["relation"]
-                orch_dict = {
-                    "original_query":      q,
-                    "search_query":        rel.scientific_query or q,
-                    "detected_language":   "",
-                    "translation_applied": True,
-                    "confidence":          1.0,
-                    "relation":            rel.to_dict(),
-                    "retrieval_stats":     rel_out["stats"],
-                }
-                return {
-                    "query":          q,
-                    "orchestration":  orch_dict,
-                    "llm_extraction": True,
-                    "totals": {
-                        "pubmed":         len(pubmed),
-                        "europepmc":      len(europepmc),
-                        "clinicaltrials": len(clinicaltrials),
-                        "reddit":         len(reddit_raw),
-                    },
-                    "pubmed": pubmed, "europepmc": europepmc,
-                    "clinicaltrials": clinicaltrials, "reddit": reddit_raw,
-                }
-    except Exception as exc:
-        logger.warning(f"/search relational mode failed ({exc}) — falling back to keyword pipeline.")
+        except Exception as exc:
+            logger.warning(f"/search scientific: relational search failed ({exc}).")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Scientific search failed: {exc}. Try Global mode.",
+            )
+        if rel_out is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Scientific mode could not extract a clinical relation. Try rephrasing or use Global mode.",
+            )
+        pubmed         = [_to_dict(a) for a in rel_out["pubmed"]]
+        europepmc      = [_to_dict(a) for a in rel_out["europepmc"]]
+        clinicaltrials = [_to_dict(a) for a in rel_out["clinicaltrials"]]
+        reddit_raw     = [_to_dict(p) for p in rel_out["reddit"]]
+        rel = rel_out["relation"]
+        orch_dict = {
+            "original_query":      q,
+            "search_query":        rel.scientific_query or q,
+            "detected_language":   "",
+            "translation_applied": True,
+            "confidence":          1.0,
+            "relation":            rel.to_dict(),
+            "retrieval_stats":     rel_out["stats"],
+        }
+        return {
+            "query":          q,
+            "orchestration":  orch_dict,
+            "llm_extraction": True,
+            "totals": {
+                "pubmed":         len(pubmed),
+                "europepmc":      len(europepmc),
+                "clinicaltrials": len(clinicaltrials),
+                "reddit":         len(reddit_raw),
+            },
+            "pubmed": pubmed, "europepmc": europepmc,
+            "clinicaltrials": clinicaltrials, "reddit": reddit_raw,
+        }
 
-    # ── Fallback: plain keyword pipeline (orchestrator + collect) ────────────
+    # ── Global mode: plain keyword pipeline (orchestrator + collect) ─────────
     orch = _orchestrator.process(q)
     pipeline = HLEOPipeline()
     raw = pipeline.collect(orch.search_query)
@@ -201,67 +302,64 @@ def search(q: str = Query(..., description="Search query")):
 # ── Article pipeline ──────────────────────────────────────────────────────────
 
 @app.post("/pipeline/run")
-def run_pipeline(q: str = Query(...), db: Session = Depends(get_db)):
+def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
+                 mode: str = Query("scientific", description="Extraction mode: 'scientific' (relational, relevant-only) | 'global' (broad, all articles).")):
     """
     Full article pipeline:
-    1. Collect from PubMed, EuropePMC, ClinicalTrials
+    1. Collect from PubMed, EuropePMC, ClinicalTrials (Reddit only in global)
     2. LLM-extract a ClinicalProfile from each abstract
     3. Save profile + SourceAttribution to DB
     Returns summary and saved profiles.
+
+    Modes:
+      - scientific (default): uses RelationalSearch (Level 2) and extracts profiles
+        ONLY from articles judged `relevant` by the relational judge. Requires
+        OPENAI_API_KEY. The relation is preserved and relevance_label/score/reason
+        are stored in validation_payload so profiles stay relation-pure.
+      - global: broad keyword pipeline (orchestrator + collect), extracts from all
+        retrieved articles, no relevance filter (prior behavior).
     """
-    from core.pipeline import HLEOPipeline
     from core.article_extractor import ArticleExtractor
 
-    # ── Orchestrate: detect language, translate to scientific English if needed ──
-    orch = _orchestrator.process(q)
-
-    pipeline  = HLEOPipeline()
     extractor = ArticleExtractor()
-
     if extractor.client is None:
         return {"error": "OPENAI_API_KEY not set — cannot run LLM extraction."}
 
-    raw = pipeline.collect(orch.search_query)
-
-    articles = []
-    for item in raw["pubmed"]:
-        articles.append({
-            "source":     "pubmed",
-            "episode_id": f"pubmed-{item.pmid}",
-            "title":      item.title,
-            "abstract":   item.abstract or "",
-            "url":        f"https://pubmed.ncbi.nlm.nih.gov/{item.pmid}/",
-            "external_id": item.pmid,
-            "journal":    (item.metadata or {}).get("journal", ""),
-            "pub_year":   str((item.metadata or {}).get("pubdate", ""))[:4],
-            "meta":       item.metadata or {},
-        })
-    for item in raw["europepmc"]:
-        ep_id = (item.metadata or {}).get("id") or (item.doi or "").replace("/", "-")
-        articles.append({
-            "source":     "europepmc",
-            "episode_id": f"europepmc-{ep_id}",
-            "title":      item.title,
-            "abstract":   item.abstract or "",
-            "url":        f"https://doi.org/{item.doi}" if item.doi else "",
-            "external_id": item.doi or ep_id,
-            "journal":    (item.metadata or {}).get("journal", ""),
-            "pub_year":   str(item.year or ""),
-            "meta":       item.metadata or {},
-        })
-    for item in raw["clinicaltrials"]:
-        nct = (item.metadata or {}).get("nct_id", "unknown")
-        articles.append({
-            "source":     "clinicaltrials",
-            "episode_id": f"clinicaltrial-{nct}",
-            "title":      item.title,
-            "abstract":   item.abstract or "",
-            "url":        f"https://clinicaltrials.gov/study/{nct}" if nct != "unknown" else "",
-            "external_id": nct,
-            "journal":    "",
-            "pub_year":   str(item.year or ""),
-            "meta":       item.metadata or {},
-        })
+    # ── Retrieval dispatch (mode-aware) ──────────────────────────────────────
+    rel_dict: Optional[dict] = None   # relation preserved from scientific search
+    if mode == "scientific":
+        from core.relational_search import RelationalSearch
+        rs = RelationalSearch()
+        if rs._client is None:
+            return {"error": "Scientific mode requires OPENAI_API_KEY."}
+        try:
+            rel_out = rs.search(q)
+        except Exception as exc:
+            logger.warning(f"/pipeline/run scientific: relational search failed ({exc}).")
+            return {"error": f"Scientific search failed: {exc}. Try Global mode."}
+        if rel_out is None:
+            return {"error": "Scientific mode could not extract a clinical relation. Try rephrasing or use Global mode."}
+        rel = rel_out["relation"]
+        rel_dict = rel.to_dict()
+        orch_search_query = rel.scientific_query or q
+        # Scientific rule: profiles only from articles judged 'relevant'.
+        articles = _articles_from_relational(rel_out, only_relevant=True)
+        if not articles:
+            return {
+                "query":           q,
+                "orchestration":   {"original_query": q, "search_query": orch_search_query,
+                                    "relation": rel_dict, "translation_applied": True},
+                "processed":       0, "saved": 0, "already_existed": 0, "errors": 0,
+                "episode_ids":     [], "results": [], "error_details": [],
+                "warning":         "No articles judged relevant; no profiles extracted.",
+            }
+    else:
+        from core.pipeline import HLEOPipeline
+        orch = _orchestrator.process(q)
+        orch_search_query = orch.search_query
+        pipeline = HLEOPipeline()
+        raw = pipeline.collect(orch_search_query)
+        articles = _articles_from_raw(raw)
 
     # ── Phase 1: Pre-checks (sequential, cheap DB lookups) ───────────────────
     # Resolve already-existing records and no-abstract skips before any LLM work.
@@ -388,6 +486,9 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db)):
                     "journal":        art["journal"],
                     "pub_year":       art["pub_year"],
                     "meta":           art["meta"],
+                    "relevance_label":  art.get("relevance_label"),
+                    "relevance_score":  art.get("relevance_score"),
+                    "relevance_reason": art.get("relevance_reason"),
                 },
             )
             db.add(row)
@@ -427,9 +528,21 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db)):
     # to filter the profiles view to only this search's results.
     all_episode_ids = [s["episode_id"] for s in saved]
 
+    # Build orchestration dict for the response (mode-aware).
+    if mode == "scientific":
+        orchestration_out = {
+            "original_query":      q,
+            "search_query":        orch_search_query,
+            "detected_language":   "",
+            "translation_applied": True,
+            "relation":            rel_dict,
+        }
+    else:
+        orchestration_out = orch.to_dict()
+
     return {
         "query":           q,
-        "orchestration":   orch.to_dict(),
+        "orchestration":   orchestration_out,
         "processed":       len(articles),
         "saved":           len([s for s in saved if s["status"] == "saved"]),
         "already_existed": len([s for s in saved if s["status"] == "already_exists"]),
@@ -690,6 +803,46 @@ class ChatRequest(BaseModel):
     message: str
     language: Optional[str] = "en"         # ISO 639-1 code, e.g. "en" / "it"
     search_context: Optional[SearchContext] = None   # Feature 002: active search
+
+
+# ── Level 3: Scientific Synthesis (reuses Level 2 results, no re-search) ──────
+
+class SynthesisArticle(BaseModel):
+    """One article already judged relevant by the Level 2 relational judge."""
+    source: str
+    title: str
+    abstract: Optional[str] = ""
+    url: Optional[str] = ""
+    pmid: Optional[str] = ""
+    doi: Optional[str] = ""
+    nct_id: Optional[str] = ""
+    year: Optional[str] = ""
+    journal: Optional[str] = ""
+    relevance_label: Optional[str] = ""
+    relevance_score: Optional[float] = None
+    relevance_reason: Optional[str] = ""
+
+
+class SynthesisRelation(BaseModel):
+    """The ClinicalRelation extracted by Level 2 (passed through from /search)."""
+    original_query: str = ""
+    agent: dict = {}
+    event: dict = {}
+    manifestation: dict = {}
+    temporal: str = ""
+    relation_type: str = "unknown"
+    scientific_query: str = ""
+    relation_phrases: list = []
+    fallback_needed: bool = False
+
+
+class SynthesisRequest(BaseModel):
+    query: str
+    search_query: Optional[str] = ""
+    detected_language: Optional[str] = "en"
+    language: Optional[str] = "en"
+    relation: Optional[SynthesisRelation] = None
+    articles: List[SynthesisArticle] = []
 
 
 @app.post("/assistant/chat")
@@ -1044,6 +1197,152 @@ def assistant_chat(
         "response":            assistant_text,
         "context_used_count":  len(context_snippets),
         "context_episode_ids": context_episode_ids,
+    }
+
+
+# ── Level 3: Scientific Synthesis ─────────────────────────────────────────────
+
+_SYNTHESIS_PROMPT = """You are a senior clinical evidence synthesizer. You are given:
+1) a CLINICAL RELATION the user is investigating, and
+2) a set of ALREADY-RETRIEVED, JUDGED-RELEVANT scientific articles (their titles, abstracts, and bibliographic IDs).
+
+Your job: synthesize the evidence ACROSS articles into a structured scientific answer.
+You must anchor every claim to the provided articles (cite by index and identifier). Do NOT invent articles, PMIDs, DOIs, or findings not present in the inputs. If the evidence is insufficient or contradictory, say so explicitly.
+
+Return ONLY a JSON object with this exact schema:
+{{
+  "conclusion": "3-5 sentence clinical conclusion synthesizing what the evidence says about the relation",
+  "evidence_summary": "where the studies agree/disagree, sample/population, study design limitations, gaps",
+  "claims": [
+    {{
+      "article_index": <int, the [i] index>,
+      "claim": "the specific finding/claim this article contributes regarding the relation",
+      "evidence_type": "direct" | "indirect",
+      "confidence": "high" | "moderate" | "low",
+      "citation": "PMID xxx | DOI xxx | NCT xxx"
+    }}
+  ],
+  "agreements": ["points where >=2 articles concur"],
+  "contradictions": ["points where articles disagree"],
+  "confidence": {{"level": "high" | "moderate" | "low", "rationale": "why this confidence level (n. articles, consistency, design)"}},
+  "key_studies": ["3-5 most relevant citations"]
+}}
+
+Direct evidence = the article explicitly studies the relation (agent->manifestation).
+Indirect evidence = the relation is inferable or only partially addressed.
+"""
+
+def _describe_synthesis_relation(rel: Optional[SynthesisRelation]) -> str:
+    if rel is None:
+        return "(no structured relation extracted — synthesize from the query and articles)"
+    a = rel.agent.get("normalized", "") or rel.agent.get("term", "")
+    m = rel.manifestation.get("normalized", "") or rel.manifestation.get("term", "")
+    ev = rel.event.get("normalized", "") or rel.event.get("term", "")
+    rt = rel.relation_type
+    parts = [f"Original query: {rel.original_query}"]
+    if rt == "adverse_effect":
+        parts.append(f"Relation: {a} (via {ev}) may CAUSE/TRIGGER {m} as an adverse effect")
+    elif rt == "efficacy":
+        parts.append(f"Relation: {a} used to TREAT {m}")
+    elif rt == "exposure_outcome":
+        parts.append(f"Relation: {a} (via {ev}) leads to / is associated with {m}")
+    else:
+        parts.append(f"Relation: {a} -> {m}")
+    if rel.temporal:
+        parts.append(f"Temporal context: {rel.temporal}")
+    if rel.relation_phrases:
+        parts.append("Relation phrases: " + "; ".join(rel.relation_phrases))
+    return "\n".join(parts)
+
+
+@app.post("/synthesis")
+def synthesize(body: SynthesisRequest):
+    """Level 3: synthesize a structured scientific answer from Level 2 results.
+
+    Receives the query, the ClinicalRelation extracted by /search (scientific),
+    and the articles already judged relevant — it does NOT re-run retrieval.
+    Returns conclusion, evidence summary, per-article claims (direct/indirect),
+    agreements/contradictions, confidence, and key study citations.
+    """
+    import os, json as _json
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Scientific synthesis requires OPENAI_API_KEY.")
+
+    if not body.articles:
+        return {"error": "No relevant articles provided for synthesis."}
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+
+    # Format articles as a numbered block with identifiers for citation.
+    art_lines = []
+    for i, a in enumerate(body.articles):
+        ident = a.pmid or a.doi or a.nct_id or a.url or ""
+        ident_str = f"PMID {a.pmid}" if a.pmid else (f"DOI {a.doi}" if a.doi else (f"NCT {a.nct_id}" if a.nct_id else ident))
+        meta_bits = [x for x in [a.journal, a.year] if x]
+        meta_str = f" ({', '.join(meta_bits)})" if meta_bits else ""
+        rel_str = ""
+        if a.relevance_label:
+            rel_str = f" | relevance: {a.relevance_label}"
+            if a.relevance_score is not None:
+                rel_str += f" ({a.relevance_score})"
+        abstract = (a.abstract or "")[:1200]
+        art_lines.append(
+            f"[{i}] [{a.source}] {ident_str}{meta_str} — {a.title}\n    ABSTRACT: {abstract}{rel_str}"
+        )
+    articles_block = "\n".join(art_lines)
+
+    relation_desc = _describe_synthesis_relation(body.relation)
+
+    _LANG_MAP = {
+        "it": "Italian", "en": "English", "fr": "French",
+        "de": "German",  "es": "Spanish", "pt": "Portuguese",
+    }
+    _resp_lang = _LANG_MAP.get(body.language or "en", "English")
+    _lang_note = (
+        f"\n\nIMPORTANT: You must respond entirely in {_resp_lang}. "
+        f"All your answers, labels, and explanations must be written in {_resp_lang}."
+        if _resp_lang != "English" else ""
+    )
+
+    prompt = (
+        f"{_SYNTHESIS_PROMPT}\n\n"
+        f"=== CLINICAL RELATION ===\n{relation_desc}\n\n"
+        f"=== RELEVANT ARTICLES ({len(body.articles)}) ===\n{articles_block}\n"
+        f"{_lang_note}"
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            max_tokens=2200,
+        )
+        s = resp.choices[0].message.content.strip()
+        if s.startswith("```"):
+            s = s.split("```", 2)[1]
+            if s.startswith("json"):
+                s = s[4:]
+            s = s.strip()
+            if s.endswith("```"):
+                s = s[:-3]
+        parsed = _json.loads(s)
+    except _json.JSONDecodeError as exc:
+        logger.exception(f"/synthesis: JSON parse error — {exc}")
+        return {"error": f"Synthesis returned malformed JSON: {exc}"}
+    except Exception as exc:
+        logger.exception(f"/synthesis failed — {exc}")
+        return {"error": f"Synthesis failed: {exc}"}
+
+    return {
+        **parsed,
+        "relation": body.relation.model_dump() if body.relation else None,
+        "query":    body.query,
+        "language": body.language,
     }
 
 
