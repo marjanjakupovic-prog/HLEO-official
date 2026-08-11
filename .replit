@@ -1,2 +1,8 @@
 [nix]
 channel = "stable-25_05"
+
+[run]
+# Start the FastAPI/Uvicorn app. Replit exposes the app via $PORT; when the
+# runtime does not set PORT (e.g. the all-hands work-host that maps internal
+# port 12000), fall back to 12000 so the app stays reachable.
+run = "bash -c 'python -m uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-12000}'"
