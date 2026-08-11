@@ -7,10 +7,11 @@ Endpoints:
   GET  /search?q=&mode=      → scientific (relational, L2) or global (keyword) collect
   POST /pipeline/run?q=&mode=→ collect + LLM-extract articles → DB (scientific: relevant-only)
   POST /synthesis            → Level 3 scientific synthesis (reuses L2 relevant articles, no re-search)
+  GET  /rwe/search?q=        → RWE search (Reddit + openFDA FAERS) — patient experiences & community
   GET  /profiles?limit=       → saved clinical profiles
   POST /experiences/ingest?q= → collect Reddit + LLM-extract patient experiences → DB
   GET  /experiences?limit=   → saved patient experiences
-  POST /assistant/chat       → AI Clinical Assistant (RAG over DB)
+  POST /assistant/chat       → AI Clinical Assistant (RAG over DB; accepts scientific + RWE context)
   GET  /assistant/sessions/{session_id} → chat history
 """
 import logging
@@ -771,6 +772,31 @@ def list_experiences(
     }
 
 
+# ── RWE search (Real World Evidence — patient experiences & community) ────────
+#
+# Independent from the scientific /search pipeline. Collects from Reddit
+# (PRAW OAuth2) and openFDA FAERS (official API, no key required) only —
+# sources that require authorization are registered in /rwe/sources but
+# never scraped. RWE items are stamped evidence_tier=anecdotal /
+# spontaneous_report and never presented as clinical evidence.
+
+@app.get("/rwe/search")
+def rwe_search(
+    q: str = Query(..., description="RWE search query"),
+    limit: int = Query(15, ge=1, le=50),
+    sources: Optional[str] = Query(
+        None, description="Comma-separated subset: reddit,openfda_faers"
+    ),
+):
+    """Run the RWE pipeline. Returns normalized RWE items with provenance."""
+    from core.rwe.pipeline import RWEPipeline
+
+    pipe = RWEPipeline()
+    src_list = [s.strip() for s in sources.split(",")] if sources else None
+    result = pipe.search(q, limit=limit, sources=src_list)
+    return result.model_dump()
+
+
 # ── AI Clinical Assistant ─────────────────────────────────────────────────────
 
 from typing import List
@@ -788,15 +814,46 @@ class SearchArticleCtx(BaseModel):
     year: Optional[str] = ""
     journal: Optional[str] = ""
 
+class RWEItemCtx(BaseModel):
+    """One RWE item forwarded by the frontend with a chat message.
+
+    RWE is kept strictly separate from scientific evidence: ``source_type``
+    and ``evidence_tier`` let the Assistant distinguish testimonials /
+    pharmacovigilance reports from clinical studies.
+    """
+    source: str
+    source_type: str
+    evidence_tier: str = "anecdotal"
+    collection_method: str = "official_api"
+    source_url: Optional[str] = ""
+    external_id: Optional[str] = ""
+    title: str = ""
+    text: str = ""
+    date: Optional[str] = ""
+    language: str = "en"
+    topic: str = ""
+    treatment: Optional[str] = ""
+    condition: Optional[str] = ""
+    experience_type: str = "discussion"
+    relevance: str = "unknown"
+    relevance_reason: Optional[str] = ""
+    privacy_status: str = "redacted"
+    metadata: dict = {}
+
 class SearchContext(BaseModel):
     """
     Active search context forwarded by the frontend with every chat message.
     Populated by the orchestrator output + raw collector results.
+
+    ``articles`` is the scientific evidence; ``rwe_evidence`` is the optional
+    RWE evidence. They are kept separate so the Assistant never conflates a
+    testimonial with a clinical study.
     """
     original_query: str
     search_query: str               # English query actually sent to collectors
     detected_language: str          # ISO-639-1 code from orchestrator
     articles: List[SearchArticleCtx] = []
+    rwe_evidence: List[RWEItemCtx] = []   # Feature: RWE convergence
 
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
@@ -907,6 +964,9 @@ def assistant_chat(
                 detected_language=sc_data.get("detected_language", "en"),
                 articles=[
                     SearchArticleCtx(**a) for a in sc_data.get("articles", [])
+                ],
+                rwe_evidence=[
+                    RWEItemCtx(**r) for r in sc_data.get("rwe_evidence", [])
                 ],
             )
         except Exception:
@@ -1100,8 +1160,15 @@ def assistant_chat(
             "- The response must read like a clinician's written opinion, not a database printout.\n"
             "══════════════════════════════════════════\n"
         )
+    elif sc and sc.rwe_evidence:
+        # No scientific articles, but RWE items are present — RWE drives the answer.
+        search_block = (
+            f"══ PRIORITY 1 — CURRENT SEARCH: no scientific articles retrieved "
+            f"(query: '{sc.original_query}'). Real-world evidence is available below. ══\n"
+            "══════════════════════════════════════════\n"
+        )
     elif sc:
-        # Search was performed but returned no articles
+        # Search was performed but returned no articles and no RWE
         search_block = (
             f"══ PRIORITY 1 — CURRENT SEARCH: no articles retrieved "
             f"(query: '{sc.original_query}') ══\n"
@@ -1109,6 +1176,61 @@ def assistant_chat(
             "If you must rely on general knowledge, state explicitly at the END of your response:\n"
             "  'Note: the current search returned no results. "
             "This answer is based on general medical knowledge.'\n"
+            "══════════════════════════════════════════\n"
+        )
+
+    # ── RWE evidence block (kept strictly separate from scientific) ──
+    # Built only when the frontend forwarded RWE items. RWE never overrides
+    # scientific evidence; it supplements it in a distinct, labelled section.
+    rwe_block = ""
+    has_rwe = bool(sc and sc.rwe_evidence)
+    if has_rwe:
+        rwe_items = sc.rwe_evidence
+        rwe_lines = []
+        for i, it in enumerate(rwe_items, 1):
+            tier_label = {
+                "anecdotal": "anecdotal (community)",
+                "spontaneous_report": "spontaneous report (pharmacovigilance)",
+                "survey": "survey",
+            }.get(it.evidence_tier, it.evidence_tier)
+            src_label = {
+                "reddit": "Reddit", "openfda_faers": "openFDA FAERS",
+            }.get(it.source, it.source)
+            date_part = f" ({it.date})" if it.date else ""
+            treat_part = f" | Treatment: {it.treatment}" if it.treatment else ""
+            text_excerpt = (it.text or "").strip()
+            if len(text_excerpt) > 350:
+                text_excerpt = text_excerpt[:340] + "…"
+            rwe_lines.append(
+                f"  [{i}] [{src_label} — {tier_label}]{date_part}{treat_part}\n"
+                f"      {it.title or '(no title)'}\n"
+                f"      Text: {text_excerpt or 'N/A'}"
+            )
+        rwe_source_labels = sorted(set(
+            {"reddit": "Reddit", "openfda_faers": "openFDA FAERS"}.get(i.source, i.source)
+            for i in rwe_items
+        ))
+        rwe_block = (
+            f"══ REAL-WORLD EVIDENCE (RWE) — {len(rwe_items)} item(s) from: "
+            f"{', '.join(rwe_source_labels)} ══\n"
+            "These are patient-reported experiences, community discussions, and "
+            "spontaneous adverse-event reports. They are NOT clinical studies and must "
+            "NOT be presented as scientific proof. Cite each as '[RWE: <Source>]'.\n\n"
+            + "\n\n".join(rwe_lines)
+            + "\n\n"
+            "RWE RESPONSE RULES:\n"
+            "- RWE is supplementary and explicitly lower-evidence than scientific studies.\n"
+            "- NEVER present a testimonial or a FAERS report as established clinical fact.\n"
+            "- If scientific articles are ALSO present (Priority 1 above), structure your "
+            "answer with BOTH: a scientific section AND a 'Testimonianze e discussioni' "
+            "section, plus a 'Confronto' (comparison) section noting where RWE agrees or "
+            "diverges from the scientific evidence.\n"
+            "- If ONLY RWE is present (no scientific articles), answer using the RWE items "
+            "under a 'Testimonianze e discussioni' heading, and explicitly state that "
+            "these are patient-reported experiences, not clinical evidence, and recommend "
+            "consulting the scientific literature / a clinician.\n"
+            "- Preserve provenance: every RWE claim must cite its [RWE: <Source>] origin.\n"
+            "- Respect privacy_status: never attribute statements to named individuals.\n"
             "══════════════════════════════════════════\n"
         )
 
@@ -1147,18 +1269,30 @@ def assistant_chat(
         "SOURCE PRIORITY — strictly enforced:\n"
         "  1. CURRENT SEARCH RESULTS — the retrieved scientific articles are the ONLY valid "
         "primary source when present. Build every primary section exclusively from these.\n"
-        "  2. HLEO DATABASE — supplementary only; never used as primary evidence when search "
+        "  2. REAL-WORLD EVIDENCE (RWE) — patient experiences, community discussions, and "
+        "pharmacovigilance reports. Lower-evidence than scientific studies; never presented "
+        "as clinical proof. Always kept in a distinct, labelled section.\n"
+        "  3. HLEO DATABASE — supplementary only; never used as primary evidence when search "
         "articles are available.\n"
-        "  3. GENERAL KNOWLEDGE — only when (1) and (2) are both insufficient.\n\n"
+        "  4. GENERAL KNOWLEDGE — only when (1), (2) and (3) are all insufficient.\n\n"
         "You always:\n"
-        "- Cite sources inline (e.g. '[PubMed]', '[Europe PMC]', '[HLEO DB]').\n"
+        "- Cite sources inline (e.g. '[PubMed]', '[Europe PMC]', '[RWE: Reddit]', "
+        "'[RWE: openFDA FAERS]', '[HLEO DB]').\n"
+        "- Keep scientific evidence and RWE strictly separate: never present a testimonial "
+        "or a spontaneous adverse-event report as established clinical fact.\n"
         "- Acknowledge uncertainty; never overstate evidence strength.\n"
         "- Recommend consulting a qualified clinician for personal medical decisions.\n"
-        "- When search results are present, follow the CLINICAL REASONING ENGINE in Priority 1 "
-        "exactly — synthesis and clinical judgment first, individual studies last.\n"
-        "- When no search results are present, answer concisely (3–6 sentences) using "
+        "- When scientific search results are present, follow the CLINICAL REASONING ENGINE "
+        "in Priority 1 exactly — synthesis and clinical judgment first, individual studies last.\n"
+        "- When only RWE is present (no scientific articles), answer under a "
+        "'Testimonianze e discussioni' heading using the RWE items, and explicitly state they "
+        "are patient-reported experiences, not clinical evidence.\n"
+        "- When both scientific and RWE are present, include BOTH a scientific section AND a "
+        "'Testimonianze e discussioni' section, plus a 'Confronto' (comparison) section.\n"
+        "- When no search results are present at all, answer concisely (3–6 sentences) using "
         "HLEO DB then general knowledge.\n\n"
         f"{search_block}"
+        f"{rwe_block}"
         f"{db_header}\n\n"
         f"{p3_note}"
         f"{_lang_note}"
@@ -1173,7 +1307,7 @@ def assistant_chat(
         model="gpt-4o",
         messages=llm_messages,
         temperature=0.2,
-        max_tokens=1800 if has_search_articles else 800,
+        max_tokens=1800 if (has_search_articles or has_rwe) else 800,
     )
     assistant_text = response.choices[0].message.content
 

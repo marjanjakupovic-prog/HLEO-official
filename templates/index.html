@@ -347,6 +347,7 @@
     <div class="flex justify-center gap-2 mb-8" id="searchModeTabs" role="tablist">
       <button class="search-mode-tab active" data-mode="scientific" onclick="setSearchMode('scientific')" data-i18n="mode_scientific">Scientifica</button>
       <button class="search-mode-tab" data-mode="global" onclick="setSearchMode('global')" data-i18n="mode_global">Globale</button>
+      <button class="search-mode-tab" data-mode="rwe" onclick="setSearchMode('rwe')" data-i18n="mode_rwe">RWE</button>
     </div>
     <form id="searchForm" class="max-w-2xl mx-auto">
       <div class="search-ring flex items-center gap-2 dark:bg-surface-card bg-white dark:border-surface-border border-slate-200 border rounded-xl px-4 py-3 shadow-sm">
@@ -372,6 +373,7 @@
       <button class="filter-btn" data-source="europepmc">Europe PMC <span id="cnt-europepmc" class="ml-1 opacity-70"></span></button>
       <button class="filter-btn" data-source="clinicaltrials"><span data-i18n="search_filter_clinicaltrials">ClinicalTrials</span> <span id="cnt-clinicaltrials" class="ml-1 opacity-70"></span></button>
       <button class="filter-btn" data-source="reddit">Reddit <span id="cnt-reddit" class="ml-1 opacity-70"></span></button>
+      <button class="filter-btn" data-source="openfda_faers">openFDA <span id="cnt-openfda" class="ml-1 opacity-70"></span></button>
     </div>
     <div class="flex gap-2 flex-wrap">
       <button id="runPipelineBtn"
@@ -736,9 +738,12 @@ const TRANSLATIONS = {
     search_btn_synthesis:"Synthesis (LLM)",
     mode_scientific:"Scientific",
     mode_global:"Global",
+    mode_rwe:"RWE",
     search_hero_subtitle_sci:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov (relational)",
     search_hero_subtitle_global:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit (broad)",
+    search_hero_subtitle_rwe:"Reddit \u00b7 openFDA FAERS (patient experiences & adverse events)",
     search_scientific_unavailable:"Scientific mode requires an LLM key. Switch to Global.",
+    rwe_partial:"Some RWE sources unavailable",
     synthesis_title:"Scientific Synthesis",
     synthesis_conclusion:"Conclusion",
     synthesis_confidence:"Confidence",
@@ -912,9 +917,12 @@ const TRANSLATIONS = {
     search_btn_synthesis:"Sintesi (LLM)",
     mode_scientific:"Scientifica",
     mode_global:"Globale",
+    mode_rwe:"RWE",
     search_hero_subtitle_sci:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov (relazionale)",
     search_hero_subtitle_global:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit (ampia)",
+    search_hero_subtitle_rwe:"Reddit \u00b7 openFDA FAERS (esperienze pazienti ed eventi avversi)",
     search_scientific_unavailable:"La modalit\u00e0 scientifica richiede una chiave LLM. Passa a Globale.",
+    rwe_partial:"Alcune fonti RWE non disponibili",
     synthesis_title:"Sintesi Scientifica",
     synthesis_conclusion:"Conclusione",
     synthesis_confidence:"Confidenza",
@@ -1187,10 +1195,11 @@ document.querySelectorAll('.nav-tab').forEach(t => t.addEventListener('click', (
 
 // ─── Badge colours ──────────────────────────────────────────────────────────
 const SOURCE_COLOR = {
-  pubmed:'blue', europepmc:'violet', clinicaltrials:'emerald', reddit:'orange'
+  pubmed:'blue', europepmc:'violet', clinicaltrials:'emerald',
+  reddit:'orange', openfda_faers:'amber'
 };
-const DARK_BADGE  = { blue:'bg-blue-500/15 text-blue-400 ring-blue-500/20', violet:'bg-violet-500/15 text-violet-400 ring-violet-500/20', emerald:'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20', orange:'bg-orange-500/15 text-orange-400 ring-orange-500/20' };
-const LIGHT_BADGE = { blue:'bg-blue-50 text-blue-700 ring-blue-200', violet:'bg-violet-50 text-violet-700 ring-violet-200', emerald:'bg-emerald-50 text-emerald-700 ring-emerald-200', orange:'bg-orange-50 text-orange-700 ring-orange-200' };
+const DARK_BADGE  = { blue:'bg-blue-500/15 text-blue-400 ring-blue-500/20', violet:'bg-violet-500/15 text-violet-400 ring-violet-500/20', emerald:'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20', orange:'bg-orange-500/15 text-orange-400 ring-orange-500/20', amber:'bg-amber-500/15 text-amber-400 ring-amber-500/20' };
+const LIGHT_BADGE = { blue:'bg-blue-50 text-blue-700 ring-blue-200', violet:'bg-violet-50 text-violet-700 ring-violet-200', emerald:'bg-emerald-50 text-emerald-700 ring-emerald-200', orange:'bg-orange-50 text-orange-700 ring-orange-200', amber:'bg-amber-50 text-amber-700 ring-amber-200' };
 function badge(color, label) {
   const dark = html.classList.contains('dark');
   return `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ring-1 ring-inset ${dark ? DARK_BADGE[color]:LIGHT_BADGE[color]}">${esc(label)}</span>`;
@@ -1240,14 +1249,17 @@ function normResults(data) {
 
 function buildSearchCard(item) {
   const {type, data:r} = item;
-  const color = SOURCE_COLOR[type];
-  const LABEL = {pubmed:'PubMed', europepmc:'Europe PMC', clinicaltrials:'ClinicalTrials', reddit:'Reddit'};
+  const color = SOURCE_COLOR[type] || 'slate';
+  const LABEL = {pubmed:'PubMed', europepmc:'Europe PMC', clinicaltrials:'ClinicalTrials', reddit:'Reddit', openfda_faers:'openFDA FAERS'};
+  const isRWE = (r.metadata?.source_type === 'community_forum' || r.metadata?.source_type === 'pharmacovigilance');
+  const rweBadge = isRWE ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ring-1 ring-inset bg-amber-500/15 text-amber-500 ring-amber-500/30 dark:text-amber-300">RWE</span>` : '';
   const abs = (r.abstract||'').slice(0,280);
   let href = null;
   if (type==='pubmed' && r.pmid)               href = `https://pubmed.ncbi.nlm.nih.gov/${r.pmid}/`;
   if (type==='europepmc' && r.doi)             href = `https://doi.org/${r.doi}`;
   if (type==='clinicaltrials' && r.metadata?.nct_id) href = `https://clinicaltrials.gov/study/${r.metadata.nct_id}`;
   if (type==='reddit' && r.url)                href = r.url;
+  if (type==='openfda_faers' && r.url)         href = r.url;
 
   const titleHtml = href
     ? `<a href="${esc(href)}" target="_blank" rel="noopener" class="hover:text-brand-400 transition-colors">${esc(r.title)}</a>`
@@ -1261,11 +1273,18 @@ function buildSearchCard(item) {
     if(r.metadata?.nct_id) metaParts.push(esc(r.metadata.nct_id));
   }
   if (type==='reddit' && r.author) metaParts.push(`u/${esc(r.author)}`);
+  if (type==='openfda_faers' && r.metadata?.external_id) metaParts.push(esc(r.metadata.external_id));
+  // RWE extra metadata: treatment + date + privacy
+  if (isRWE) {
+    if (r.metadata?.treatment) metaParts.push(`Treatment: ${esc(r.metadata.treatment)}`);
+    if (r.metadata?.date) metaParts.push(esc(r.metadata.date));
+    if (r.metadata?.privacy_status) metaParts.push(`<span class="opacity-70">${esc(r.metadata.privacy_status)}</span>`);
+  }
 
   const _fullText = `${r.title || ''}\n\n${r.abstract || r.text || ''}`.trim();
   const _cid = _regCard(_fullText, 'clinical_article');
   return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-5 animate-slide-up" data-source="${type}">
-    <div class="flex items-start gap-2 mb-2.5">${badge(color, LABEL[type])}</div>
+    <div class="flex items-start gap-2 mb-2.5">${badge(color, LABEL[type] || type)}${rweBadge}</div>
     <h3 class="text-sm font-semibold dark:text-slate-100 text-slate-800 leading-snug mb-1.5">${titleHtml}</h3>
     ${abs ? `<p class="text-xs dark:text-slate-400 text-slate-500 line-clamp-2 italic mb-2">${esc(abs)}…</p>` : ''}
     ${metaParts.length ? `<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs dark:text-slate-500 text-slate-400">${metaParts.join('<span class="opacity-30">·</span>')}</div>` : ''}
@@ -1310,6 +1329,101 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
   // but do NOT reset the counter/badge yet (that happens after pipeline completes)
   _currentSearchEpisodeIds = [];
   _searchInProgress = true;
+
+  // ── RWE mode: separate pipeline (Reddit + openFDA FAERS) ──────────────────
+  if (searchMode === 'rwe') {
+    try {
+      const res  = await fetch(`/rwe/search?q=${encodeURIComponent(q)}`);
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      // Render RWE items (normalized shape: {source, source_type, evidence_tier, ...})
+      const items = data.items || [];
+      allSearchResults = items.map(it => ({
+        type: it.source,
+        data: {
+          title: it.title || '',
+          abstract: (it.text || '').slice(0, 1200),
+          url: it.source_url || '',
+          metadata: {
+            ...(it.metadata || {}),
+            source_type: it.source_type,
+            evidence_tier: it.evidence_tier,
+            collection_method: it.collection_method,
+            treatment: it.treatment,
+            condition: it.condition,
+            experience_type: it.experience_type,
+            date: it.date,
+            language: it.language,
+            relevance: it.relevance,
+            relevance_reason: it.relevance_reason,
+            privacy_status: it.privacy_status,
+            external_id: it.external_id,
+          },
+        },
+      }));
+      // RWE context for the AI assistant — kept separate from scientific articles
+      _activeSearchCtx = {
+        original_query:    q,
+        search_query:      data.search_query      || q,
+        detected_language: data.detected_language || 'en',
+        mode:              'rwe',
+        articles:          [],   // no scientific articles in RWE-only mode
+        rwe_evidence: items.map(it => ({
+          source:            it.source,
+          source_type:       it.source_type,
+          evidence_tier:     it.evidence_tier,
+          collection_method: it.collection_method,
+          source_url:        it.source_url || '',
+          external_id:       it.external_id || '',
+          title:             it.title || '',
+          text:              (it.text || '').slice(0, 800),
+          date:              it.date || '',
+          language:          it.language || 'en',
+          topic:             it.topic || '',
+          treatment:         it.treatment || '',
+          condition:         it.condition || '',
+          experience_type:   it.experience_type || 'discussion',
+          relevance:         it.relevance || 'unknown',
+          relevance_reason:  it.relevance_reason || '',
+          privacy_status:    it.privacy_status || 'redacted',
+          metadata:          it.metadata || {},
+        })),
+      };
+      const totals = data.totals || {};
+      const total = (data.items || []).length;
+      document.getElementById('cnt-all').textContent               = total;
+      document.getElementById('cnt-pubmed').textContent            = 0;
+      document.getElementById('cnt-europepmc').textContent          = 0;
+      document.getElementById('cnt-clinicaltrials').textContent     = 0;
+      document.getElementById('cnt-reddit').textContent             =
+        items.filter(i => i.source === 'reddit').length;
+      document.getElementById('cnt-openfda').textContent            =
+        items.filter(i => i.source === 'openfda_faers').length;
+      document.getElementById('skeleton').classList.add('hidden');
+      document.getElementById('searchActionBar').classList.toggle('hidden', total === 0);
+      const srcStatus = data.source_status || {};
+      const statusParts = [];
+      for (const [src, st] of Object.entries(srcStatus)) {
+        if (st !== 'ok') {
+          const label = src === 'reddit' ? 'Reddit' : src === 'openfda_faers' ? 'openFDA' : src;
+          statusParts.push(`${label}: ${st}`);
+        }
+      }
+      if (statusParts.length) {
+        showBanner('searchBanner', `ℹ️ ${t('rwe_partial')}: ${esc(statusParts.join(', '))}`, 'warn');
+      }
+      if (total === 0) {
+        document.getElementById('searchEmpty').classList.remove('hidden');
+      }
+      renderSearch();
+    } catch(err) {
+      document.getElementById('skeleton').classList.add('hidden');
+      showBanner('searchBanner', `Error: ${esc(err.message)}`);
+    } finally {
+      _searchInProgress = false;
+    }
+    return;
+  }
 
   try {
     const res  = await fetch(`/search?q=${encodeURIComponent(q)}&mode=${searchMode}`);
@@ -1365,6 +1479,7 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
     document.getElementById('cnt-europepmc').textContent    = totals.europepmc||0;
     document.getElementById('cnt-clinicaltrials').textContent = totals.clinicaltrials||0;
     document.getElementById('cnt-reddit').textContent       = totals.reddit||0;
+    document.getElementById('cnt-openfda').textContent      = 0;
     document.getElementById('skeleton').classList.add('hidden');
     document.getElementById('searchActionBar').classList.remove('hidden');
     if (!data.llm_extraction) showBanner('searchBanner', 'ℹ️ LLM key not configured — search-only mode.', 'warn');
@@ -1408,19 +1523,27 @@ document.getElementById('runPipelineBtn').addEventListener('click', async () => 
   }
 });
 
-// ── Search mode selector (Global / Scientific) ───────────────────────────────
+// ── Search mode selector (Global / Scientific / RWE) ─────────────────────────
 function setSearchMode(mode) {
   searchMode = mode;
   document.querySelectorAll('.search-mode-tab').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
-  // Synthesis button is only available in scientific mode
+  // Synthesis + Pipeline buttons are only available in scientific/global modes
+  // (RWE is a separate evidence stream — no LLM extraction to DB, no synthesis)
+  const isRWE = (mode === 'rwe');
   document.getElementById('runSynthesisBtn').classList.toggle('hidden', mode !== 'scientific');
+  const runPipelineBtn = document.getElementById('runPipelineBtn');
+  if (runPipelineBtn) runPipelineBtn.classList.toggle('hidden', isRWE);
   // Hide any open synthesis panel when leaving scientific mode
   if (mode !== 'scientific') document.getElementById('synthesisPanel').classList.add('hidden');
-  // Update hero subtitle to reflect the active mode's sources (swap data-i18n
-  // so language switches re-apply the correct subtitle)
+  // Update hero subtitle to reflect the active mode's sources
   const sub = document.getElementById('searchHeroSubtitle');
-  const key = mode === 'scientific' ? 'search_hero_subtitle_sci' : 'search_hero_subtitle_global';
+  const keyMap = {
+    scientific: 'search_hero_subtitle_sci',
+    global:    'search_hero_subtitle_global',
+    rwe:       'search_hero_subtitle_rwe',
+  };
+  const key = keyMap[mode] || 'search_hero_subtitle_sci';
   if (sub) { sub.dataset.i18n = key; sub.textContent = t(key); }
 }
 
@@ -2077,8 +2200,12 @@ async function openSession(sid) {
     const badge    = document.getElementById('contextBadge');
     const badgeTxt = document.getElementById('contextBadgeText');
     const artCount = _activeSearchCtx?.articles?.length || 0;
+    const rweCount = _activeSearchCtx?.rwe_evidence?.length || 0;
     if (artCount > 0) {
       badgeTxt.textContent = `${artCount} article${artCount!==1?'s':''} in search context — "${_activeSearchCtx.original_query||''}"`;
+      badge.classList.remove('hidden');
+    } else if (rweCount > 0) {
+      badgeTxt.textContent = `${rweCount} RWE item${rweCount!==1?'s':''} in search context — "${_activeSearchCtx.original_query||''}"`;
       badge.classList.remove('hidden');
     } else {
       badge.classList.add('hidden');
@@ -2177,7 +2304,7 @@ async function closeSession(sid) {
       msgs.innerHTML = '';
       // Keep context badge visible if a live search context still exists
       const badge = document.getElementById('contextBadge');
-      if (!(_activeSearchCtx?.articles?.length > 0)) badge.classList.add('hidden');
+      if (!((_activeSearchCtx?.articles?.length > 0) || (_activeSearchCtx?.rwe_evidence?.length > 0))) badge.classList.add("hidden");
       const welcome = document.createElement('div');
       welcome.id = 'chatWelcome';
       welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
@@ -2216,7 +2343,7 @@ async function deleteSession(sid) {
       msgs.innerHTML = '';
       // Keep context badge visible if a live search context still exists
       const badge = document.getElementById('contextBadge');
-      if (!(_activeSearchCtx?.articles?.length > 0)) badge.classList.add('hidden');
+      if (!((_activeSearchCtx?.articles?.length > 0) || (_activeSearchCtx?.rwe_evidence?.length > 0))) badge.classList.add("hidden");
       const welcome = document.createElement('div');
       welcome.id = 'chatWelcome';
       welcome.className = 'h-full flex flex-col items-center justify-center text-center py-10';
