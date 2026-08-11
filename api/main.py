@@ -7,7 +7,7 @@ Endpoints:
   GET  /search?q=&mode=      → scientific (relational, L2) or global (keyword) collect
   POST /pipeline/run?q=&mode=→ collect + LLM-extract articles → DB (scientific: relevant-only)
   POST /synthesis            → Level 3 scientific synthesis (reuses L2 relevant articles, no re-search)
-  GET  /rwe/search?q=        → RWE search (Reddit + openFDA FAERS) — patient experiences & community
+  GET  /rwe/search?q=        → RWE search (Reddit + openFDA FAERS + Calvizie.net) — patient experiences & community
   GET  /profiles?limit=       → saved clinical profiles
   POST /experiences/ingest?q= → collect Reddit + LLM-extract patient experiences → DB
   GET  /experiences?limit=   → saved patient experiences
@@ -785,7 +785,7 @@ def rwe_search(
     q: str = Query(..., description="RWE search query"),
     limit: int = Query(15, ge=1, le=50),
     sources: Optional[str] = Query(
-        None, description="Comma-separated subset: reddit,openfda_faers"
+        None, description="Comma-separated subset: reddit,openfda_faers,calvizie,hairlosstalk,hairlossexperiences,maladiesrares"
     ),
 ):
     """Run the RWE pipeline. Returns normalized RWE items with provenance."""
@@ -1201,6 +1201,9 @@ def assistant_chat(
             }.get(it.evidence_tier, it.evidence_tier)
             src_label = {
                 "reddit": "Reddit", "openfda_faers": "openFDA FAERS",
+                "calvizie": "Calvizie.net", "hairlosstalk": "HairLossTalk",
+                "hairlossexperiences": "HairLossExperiences",
+                "maladiesrares": "MaladiesRaresInfo (FR)",
             }.get(it.source, it.source)
             date_part = f" ({it.date})" if it.date else ""
             treat_part = f" | Treatment: {it.treatment}" if it.treatment else ""
@@ -1227,7 +1230,7 @@ def assistant_chat(
                 f"      Text: {text_excerpt or 'N/A'}"
             )
         rwe_source_labels = sorted(set(
-            {"reddit": "Reddit", "openfda_faers": "openFDA FAERS"}.get(i.source, i.source)
+            {"reddit": "Reddit", "openfda_faers": "openFDA FAERS", "calvizie": "Calvizie.net", "hairlosstalk": "HairLossTalk", "hairlossexperiences": "HairLossExperiences", "maladiesrares": "MaladiesRaresInfo (FR)"}.get(i.source, i.source)
             for i in rwe_items
         ))
         rwe_block = (

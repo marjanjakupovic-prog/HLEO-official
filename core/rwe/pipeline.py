@@ -208,8 +208,16 @@ class RWEPipeline:
     def __init__(self) -> None:
         from core.rwe.reddit_adapter import RedditRWEAdapter
         from core.rwe.openfda_collector import OpenFDACollector
+        from core.rwe.calvizie_collector import CalvizieCollector
+        from core.rwe.hairlosstalk_collector import HairLossTalkCollector
+        from core.rwe.hairlossexperiences_collector import HairLossExperiencesCollector
+        from core.rwe.maladiesrares_collector import MaladiesRaresCollector
         self.reddit = RedditRWEAdapter()
         self.openfda = OpenFDACollector()
+        self.calvizie = CalvizieCollector()
+        self.hairlosstalk = HairLossTalkCollector()
+        self.hairlossexperiences = HairLossExperiencesCollector()
+        self.maladiesrares = MaladiesRaresCollector()
         self._engine = RWEQueryEngine()
 
     def search(
@@ -228,11 +236,18 @@ class RWEPipeline:
         """
         # ── 1. Build the query plan (detect → prepare → translate → expand) ──
         plan = self._engine.plan(query)
-        sources = sources or ["reddit", "openfda_faers"]
+        sources = sources or [
+            "reddit", "openfda_faers", "calvizie",
+            "hairlosstalk", "hairlossexperiences", "maladiesrares",
+        ]
 
         per_source_limits = {
             "reddit": limit,
             "openfda_faers": limit,
+            "calvizie": limit,
+            "hairlosstalk": limit,
+            "hairlossexperiences": limit,
+            "maladiesrares": limit,
         }
 
         all_items: List[RWEItem] = []
@@ -250,6 +265,35 @@ class RWEPipeline:
                 "openfda_faers", self.openfda, plan, per_source_limits["openfda_faers"]
             )
             source_status["openfda_faers"] = status
+            all_items.extend(items)
+
+        if "calvizie" in sources:
+            items, status = self._collect_source(
+                "calvizie", self.calvizie, plan, per_source_limits["calvizie"]
+            )
+            source_status["calvizie"] = status
+            all_items.extend(items)
+
+        if "hairlosstalk" in sources:
+            items, status = self._collect_source(
+                "hairlosstalk", self.hairlosstalk, plan, per_source_limits["hairlosstalk"]
+            )
+            source_status["hairlosstalk"] = status
+            all_items.extend(items)
+
+        if "hairlossexperiences" in sources:
+            items, status = self._collect_source(
+                "hairlossexperiences", self.hairlossexperiences,
+                plan, per_source_limits["hairlossexperiences"],
+            )
+            source_status["hairlossexperiences"] = status
+            all_items.extend(items)
+
+        if "maladiesrares" in sources:
+            items, status = self._collect_source(
+                "maladiesrares", self.maladiesrares, plan, per_source_limits["maladiesrares"]
+            )
+            source_status["maladiesrares"] = status
             all_items.extend(items)
 
         # ── 2. Deduplicate across (query × source), keep best matched_query ──

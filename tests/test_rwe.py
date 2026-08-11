@@ -102,7 +102,7 @@ def test_rwe_search_both_sources_ok():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="finasteride hair loss", detected_language="en",
         )
-        result = pipe.search("finasteride hair loss")
+        result = pipe.search("finasteride hair loss", sources=["reddit", "openfda_faers"])
     assert result.totals["unique"] == 2
     assert result.source_status["reddit"] == "ok"
     assert result.source_status["openfda_faers"] == "ok"
@@ -133,7 +133,7 @@ def test_rwe_search_no_results():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="xyz", detected_language="en",
         )
-        result = pipe.search("xyz")
+        result = pipe.search("xyz", sources=["reddit", "openfda_faers"])
     assert result.items == []
     assert result.source_status["reddit"] == "no_credentials"
     assert result.source_status["openfda_faers"] == "no_results"
@@ -147,7 +147,7 @@ def test_rwe_source_unauthorized():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="dutasteride", detected_language="en",
         )
-        result = pipe.search("dutasteride")
+        result = pipe.search("dutasteride", sources=["reddit", "openfda_faers"])
     assert result.source_status["reddit"] == "auth_error"
     assert result.source_status["openfda_faers"] == "ok"
     assert len(result.items) == 1
@@ -162,7 +162,7 @@ def test_rwe_source_unavailable_network():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="ketoconazole", detected_language="en",
         )
-        result = pipe.search("ketoconazole")
+        result = pipe.search("ketoconazole", sources=["reddit", "openfda_faers"])
     assert result.items == []
     assert result.source_status["reddit"] == "network_error"
     assert result.source_status["openfda_faers"] == "network_error"
@@ -201,10 +201,10 @@ def test_rwe_provenance_stamped():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="finasteride", detected_language="en",
         )
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     for it in result.items:
         assert it.source_type in ("community_forum", "pharmacovigilance")
-        assert it.collection_method.startswith("official_api")
+        assert it.collection_method.startswith("official_")
         assert it.evidence_tier in ("anecdotal", "spontaneous_report")
         assert it.privacy_status in ("redacted", "anonymous")
 
@@ -220,7 +220,7 @@ def test_rwe_search_does_not_touch_scientific():
         MockOrch.return_value.process.return_value = SimpleNamespace(
             search_query="finasteride", detected_language="en",
         )
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     # No scientific source_type should ever appear in RWE results
     assert all(i.source_type not in ("pubmed", "europepmc", "clinicaltrials") for i in result.items)
 

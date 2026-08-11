@@ -29,6 +29,30 @@ RWE_SOURCES = {
         "evidence_tier": "spontaneous_report",
         "language": "en",
     },
+    "calvizie": {
+        "source_type": "community_forum",
+        "collection_method": "official_rss_feed",
+        "evidence_tier": "anecdotal",
+        "language": "it",
+    },
+    "hairlosstalk": {
+        "source_type": "community_forum",
+        "collection_method": "official_rss_feed",
+        "evidence_tier": "anecdotal",
+        "language": "en",
+    },
+    "hairlossexperiences": {
+        "source_type": "community_forum",
+        "collection_method": "official_rss_feed",
+        "evidence_tier": "anecdotal",
+        "language": "en",
+    },
+    "maladiesrares": {
+        "source_type": "community_forum",
+        "collection_method": "official_atom_feed",
+        "evidence_tier": "anecdotal",
+        "language": "fr",
+    },
 }
 
 

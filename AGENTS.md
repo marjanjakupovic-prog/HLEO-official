@@ -50,10 +50,47 @@ extraction + AI Clinical Assistant (RAG). Python 3.13.
 ## RWE implementation (Phase 4–9) — DONE
 - `core/rwe/` package: `models.py` (RWEItem/RWESearchResult Pydantic, RWE_SOURCES
   registry), `openfda_collector.py` (openFDA FAERS, official API no key),
-  `reddit_adapter.py` (wraps `RedditCollector` → RWEItem), `pipeline.py`
-  (RWEPipeline: collect → dedup → relevance_filter → provenance).
+  `reddit_adapter.py` (wraps `RedditCollector` → RWEItem),
+  `xenforo_base.py` (shared `XenForoRSSCollector` base: fetch/parse/aggregate
+  logic for any XenForo-RSS community), four XenForo/phpBB community collectors
+  (see "Community source collectors" below), `pipeline.py` (RWEPipeline:
+  collect → dedup → relevance_filter → provenance).
+- **RWE_SOURCES registry**: `reddit` (community_forum, OAuth2 API),
+  `openfda_faers` (pharmacovigilance, official_api_no_key),
+  `calvizie` (community_forum, official_rss_feed, language=it),
+  `hairlosstalk` (community_forum, official_rss_feed, language=en),
+  `hairlossexperiences` (community_forum, official_rss_feed, language=en),
+  `maladiesrares` (community_forum, official_atom_feed, language=fr).
+  Default sources in `RWEPipeline.search()`:
+  `["reddit","openfda_faers","calvizie","hairlosstalk","hairlossexperiences","maladiesrares"]`.
+  **When writing pipeline tests, pass `sources=[...]` explicitly** — the default
+  now triggers live community-feed fetches (calvizie/hairlosstalk/etc.) if not
+  mocked/restricted.
+- **Community source collectors** (all read-only, no API key/OAuth, no anti-bot):
+  - `calvizie_collector.py` — Calvizie.net (IT, XenForo RSS, 18 non-surgical
+    hair-loss sub-forums; transplant/cosmetic forums excluded).
+  - `hairlosstalk_collector.py` — HairLossTalk.com (EN, XenForo RSS, 11
+    non-surgical sub-forums: antiandrogens, minoxidil, alopecia areata/totalis/
+    universalis, side effects, shedding, success stories, alternative
+    treatments, men's/women's treatment tracks; transplant/concealer/wig/cosmetic
+    forums excluded; scope audited 2026-08 against live forums index).
+  - `hairlossexperiences_collector.py` — HairLossExperiences.com (EN, XenForo
+    RSS, 2 non-surgical RWE sub-forums: hair-loss-medications + general-hair-loss;
+    site is transplant-heavy overall so per-section inclusion is essential —
+    female-hair-loss/FAQ/products forums excluded after live audit showed
+    transplant-surgery/cosmetic content).
+  - `maladiesrares_collector.py` — MaladiesRaresInfo.org (FR, phpBB Atom feed,
+    `pelade universelle`/alopecia universalis sub-forum f173; small-volume but
+    the only FR-language alopecia-areata RWE source).
+  - `xenforo_base.py` — `XenForoRSSCollector` shared base; subclasses set
+    `source`, `base_url`, `language`, `forum_slugs`. Status codes: ok /
+    no_results / rate_limited / network_error.
+- **Collector pattern**: each collector exposes `search_with_status(query, limit)`
+  → `(items, status, reason)`. Status codes: ok / no_results / rate_limited /
+  network_error (reddit also: no_credentials / auth_error).
 - **Endpoint** `GET /rwe/search?q=&limit=&sources=` in `api/main.py` — fully
   separate from scientific `/search`; never touches PubMed/EuropePMC/CT.gov.
+  `sources` accepts comma-separated: `reddit,openfda_faers,calvizie,hairlosstalk,hairlossexperiences,maladiesrares`.
 - **AI Assistant convergence**: `SearchContext.rwe_evidence: List[RWEItemCtx]`
   (optional). System prompt has 4-tier SOURCE PRIORITY (scientific > RWE > DB >
   general). RWE block built separately; rules force "Testimonianze e discussioni"
@@ -66,10 +103,18 @@ extraction + AI Clinical Assistant (RAG). Python 3.13.
 - **openFDA query bug (fixed)**: openFDA returns 404 for `+OR+` syntax (requests
   encodes `+`→`%2B`); use spaces + `OR` instead. Test `test_openfda_query_syntax_live`
   guards against regression.
-- **Sources usable**: openFDA/FAERS (public, no key), Reddit (PRAW OAuth).
-  PatientsLikeMe/Carenity/Inspire/AskAPatient = NOT usable (no API / scrape ban).
-- **Tests**: `tests/test_rwe.py` (14 tests: pipeline, dedup, relevance,
-  provenance, separation, assistant schema, scientific regression, live openFDA).
+- **Sources usable**: openFDA/FAERS (public, no key), Reddit (PRAW OAuth),
+  Calvizie.net/HairLossTalk/HairLossExperiences (XenForo official RSS, no key),
+  MaladiesRaresInfo (phpBB official Atom, no key). PatientsLikeMe/Carenity/
+  Inspire/AskAPatient = NOT usable (no API / scrape ban). DEFERRED (anti-bot/
+  down, not bypassed): SalusMaster (Cloudflare 403), HairRestorationNetwork
+  (Cloudflare 403), BaldTruthTalk (503), International-HairLossForum (Cloudflare
+  403), Alopezie.de (unreachable, exit 56), BelliCapelli (ForumFree UA-block,
+  transplant-focused). haarerkrankungen.de software/RSS pending verification.
+- **Tests**: `tests/test_rwe.py` (14 tests), `tests/test_rwe_search.py`
+  (search-engine), `tests/test_rwe_calvizie.py` (19 Calvizie tests),
+  `tests/test_rwe_xenforo_collectors.py` (17 HairLossTalk/HairLossExperiences
+  tests), `tests/test_rwe_maladiesrares.py` (18 MaladiesRares tests).
   `tests/test_search_result.py` removed (was a broken non-test snippet since
   initial commit, blocked pytest collection).
 

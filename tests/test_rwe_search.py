@@ -369,7 +369,7 @@ def test_matched_query_stamped():
         M.return_value.process.return_value = SimpleNamespace(
             search_query="finasteride", detected_language="en", translation_applied=False,
         )
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     assert len(result.items) == 1
     it = result.items[0]
     assert it.matched_query is not None
@@ -390,7 +390,7 @@ def test_source_language_stamped():
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok(faers)), \
          patch.object(pipe.reddit, "search_with_status", reddit_en_only), \
          _mock_orch("finasteride hair loss", lang="it"):
-        result = pipe.search("caduta capelli finasteride")
+        result = pipe.search("caduta capelli finasteride", sources=["reddit", "openfda_faers"])
     # at least one item should have source_language en (matched the translated query)
     langs = {it.source_language for it in result.items}
     assert "en" in langs
@@ -403,7 +403,7 @@ def test_expanded_queries_in_result():
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_status("no_results", "none")), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_status("no_credentials", "x")), \
          _mock_orch("finasteride", lang="en", translated=False):
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     assert len(result.expanded_queries) >= 1
     assert result.original_query == "finasteride"
     assert result.translated_query == "finasteride"
@@ -424,7 +424,7 @@ def test_results_from_translated_query():
     with patch.object(pipe.reddit, "search_with_status", reddit_conditional), \
          patch.object(pipe.openfda, "search_with_status", _stub_openfda_status("no_results", "x")), \
          _mock_orch("finasteride hair loss", lang="it"):
-        result = pipe.search("caduta capelli finasteride")
+        result = pipe.search("caduta capelli finasteride", sources=["reddit", "openfda_faers"])
     assert any(it.source == "reddit" for it in result.items)
     # the matched_query should be an English expansion
     en_items = [it for it in result.items if it.matched_query and "finasteride" in it.matched_query.lower()]
@@ -443,7 +443,7 @@ def test_results_from_expanded_query():
     with patch.object(pipe.openfda, "search_with_status", openfda_conditional), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_status("no_credentials", "x")), \
          _mock_orch("finasteride", lang="en", translated=False):
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     assert any(it.external_id == "PF-1" for it in result.items)
     pf = next(it for it in result.items if it.external_id == "PF-1")
     assert "propecia" in pf.matched_query.lower()
@@ -460,7 +460,7 @@ def test_no_duplicates_across_queries():
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok([same])), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_status("no_credentials", "x")), \
          _mock_orch("finasteride", lang="en", translated=False):
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     # same item returned for many expanded queries but should appear once
     ids = [it.external_id for it in result.items if it.source == "openfda_faers"]
     assert ids.count("DUP-1") == 1
@@ -474,7 +474,7 @@ def test_rwe_only_search():
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok([_fake_faers_item()])), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_ok([_fake_reddit_item("r","u")])), \
          _mock_orch("finasteride", lang="en", translated=False):
-        result = pipe.search("finasteride")
+        result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     assert all(i.source_type in ("community_forum", "pharmacovigilance") for i in result.items)
     assert all(i.source_type not in ("pubmed", "europepmc", "clinicaltrials") for i in result.items)
 
