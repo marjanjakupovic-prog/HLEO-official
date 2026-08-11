@@ -56,6 +56,15 @@ class RWEItem(BaseModel):
     relevance: str = "unknown"          # relevant | irrelevant | unknown
     relevance_reason: Optional[str] = None
 
+    # ── Search-engine provenance (Phase: RWE Search Engine) ──────────────────
+    # Which expanded query actually matched this item, in which language, and
+    # how it was scored. Lets the Assistant cite origin precisely.
+    matched_query: Optional[str] = None     # expanded query that surfaced this item
+    matched_query_type: Optional[str] = None  # original|translated|synonym|mesh|...
+    source_language: str = "en"             # language of the matched query
+    relevance_score: float = 0.0            # 0–1 semi-semantic score
+    match_reason: Optional[str] = None      # authoritative|exact|synonym|semantic|...
+
     # Privacy / redaction status — RWE never carries direct identifiers.
     privacy_status: str = "redacted"    # redacted | anonymous
     metadata: dict = Field(default_factory=dict)
@@ -65,8 +74,12 @@ class RWESearchResult(BaseModel):
     """Envelope returned by the RWE pipeline."""
 
     query: str
-    search_query: str                   # normalized query actually sent to collectors
+    original_query: str = ""            # verbatim user input (never overwritten)
+    search_query: str                   # normalized/translated query sent to collectors
     detected_language: str = "und"
+    translated_query: str = ""          # English rendering of the original query
+    translation_applied: bool = False
+    expanded_queries: List[dict] = []   # transparent expansion provenance
     totals: dict = Field(default_factory=dict)
     items: List[RWEItem] = []
     source_status: dict = Field(default_factory=dict)  # per-source ok/unavailable/unauthorized

@@ -1274,11 +1274,13 @@ function buildSearchCard(item) {
   }
   if (type==='reddit' && r.author) metaParts.push(`u/${esc(r.author)}`);
   if (type==='openfda_faers' && r.metadata?.external_id) metaParts.push(esc(r.metadata.external_id));
-  // RWE extra metadata: treatment + date + privacy
+  // RWE extra metadata: treatment + date + privacy + search provenance
   if (isRWE) {
     if (r.metadata?.treatment) metaParts.push(`Treatment: ${esc(r.metadata.treatment)}`);
     if (r.metadata?.date) metaParts.push(esc(r.metadata.date));
     if (r.metadata?.privacy_status) metaParts.push(`<span class="opacity-70">${esc(r.metadata.privacy_status)}</span>`);
+    if (r.metadata?.matched_query) metaParts.push(`<span class="opacity-70" title="${esc(r.metadata.match_reason||'')}">q: ${esc(r.metadata.matched_query)}</span>`);
+    if (r.metadata?.relevance_score) metaParts.push(`<span class="opacity-70">rel ${Number(r.metadata.relevance_score).toFixed(2)}</span>`);
   }
 
   const _fullText = `${r.title || ''}\n\n${r.abstract || r.text || ''}`.trim();
@@ -1358,14 +1360,21 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
             relevance_reason: it.relevance_reason,
             privacy_status: it.privacy_status,
             external_id: it.external_id,
+            matched_query: it.matched_query,
+            matched_query_type: it.matched_query_type,
+            source_language: it.source_language,
+            relevance_score: it.relevance_score,
+            match_reason: it.match_reason,
           },
         },
       }));
       // RWE context for the AI assistant — kept separate from scientific articles
       _activeSearchCtx = {
-        original_query:    q,
+        original_query:    data.original_query    || q,
         search_query:      data.search_query      || q,
         detected_language: data.detected_language || 'en',
+        translated_query:  data.translated_query || '',
+        translation_applied: !!data.translation_applied,
         mode:              'rwe',
         articles:          [],   // no scientific articles in RWE-only mode
         rwe_evidence: items.map(it => ({
@@ -1385,6 +1394,11 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
           experience_type:   it.experience_type || 'discussion',
           relevance:         it.relevance || 'unknown',
           relevance_reason:  it.relevance_reason || '',
+          matched_query:     it.matched_query || '',
+          matched_query_type:it.matched_query_type || '',
+          source_language:   it.source_language || 'en',
+          relevance_score:   it.relevance_score || 0,
+          match_reason:      it.match_reason || '',
           privacy_status:    it.privacy_status || 'redacted',
           metadata:          it.metadata || {},
         })),

@@ -72,3 +72,54 @@ extraction + AI Clinical Assistant (RAG). Python 3.13.
   provenance, separation, assistant schema, scientific regression, live openFDA).
   `tests/test_search_result.py` removed (was a broken non-test snippet since
   initial commit, blocked pytest collection).
+
+## RWE Search Engine (Phase: autonomous retrieval) — DONE
+- **Goal**: transform the RWE search from "query → collector → keyword match"
+  into an autonomous pipeline:
+  User Query → language detect → prepare → translate → controlled expansion
+  → semi-semantic retrieval → RWE collectors → normalize → dedup → relevance
+  → provenance → RWE evidence → AI Assistant.
+- **New module** `core/rwe/query_engine.py`: `RWEQueryEngine` builds a
+  `RWEQueryPlan` (`original_query` NEVER overwritten, `detected_language`,
+  `translated_query`, `translation_applied`, `entities`, `expanded_queries`).
+  Reuses `QueryOrchestrator` (lang detect + translate) and `biomedical_kb`
+  (DRUG/CONDITION/SYMPTOM_ALIASES, MESH_MAP, KNOWLEDGE_GRAPH,
+  lookup_entity/get_neighbors/get_mesh_terms/quick_translate_it). NO duplicated
+  synonym/translation logic.
+- **Language detection**: `detect_language()` (fast stopword/marker heuristic,
+  IT/EN/DE/FR/ES) + orchestrator LLM detection when key present. Multi-language
+  = source-language detection + English translation (collectors are EN-oriented;
+  orchestrator only translates →English, which is the honestly-supported path).
+- **Controlled expansion**: original + translated + KB synonyms (≤3/entity) +
+  MeSH + graph neighbours (1-hop, anchored) + entity combos (drug+symptom) +
+  trichology colloquial supplement (patient phrasings: "initial shedding",
+  "increased hair fall", "temporary worsening", "caduta iniziale", etc.,
+  mapped to recognised symptom concepts). Capped at 16 queries; every expanded
+  query stays anchored to recognised entities (a finasteride query never
+  broadens into generic hair-loss chatter). KB-first/deterministic; LLM
+  expansion optional + bounded.
+- **Semi-semantic relevance** (`relevance_filter` in `pipeline.py`): score =
+  token overlap (50%) + entity/synonym overlap (50%). Authoritative sources
+  (openFDA) trusted on their own server-side match → high score floor even when
+  the query term is absent from the item's text fields (fixes the
+  finasteride/shedding openFDA case). Each item gets `relevance_score` (0–1),
+  `match_reason` (authoritative|exact_keyword|semantic_entity|...).
+- **Provenance**: every `RWEItem` carries `matched_query`, `matched_query_type`
+  (original|translated|synonym|mesh|combo|colloquial|neighbor), `source_language`,
+  `relevance_score`, `match_reason`. `RWESearchResult` exposes `original_query`,
+  `translated_query`, `detected_language`, `translation_applied`,
+  `expanded_queries` (full transparent expansion list).
+- **AI Assistant**: `RWEItemCtx` extended with the provenance fields; the RWE
+  prompt block now includes `matched_query`, `type`, `lang`, `match`, `score`
+  per item so the Assistant can cite origin precisely.
+- **Frontend**: `/rwe/search` response mapped to `rwe_evidence` with provenance
+  fields; search cards show `q:` (matched_query) + `rel` (relevance_score).
+- **Tests**: `tests/test_rwe_search.py` (37 tests: language detection IT/EN/
+  DE/FR/ES, original_query preservation, translation, expansion types, synonyms,
+  MeSH, colloquial shedding, controlled-anchored expansion, cap, dedup,
+  medical vs colloquial terms, brand→generic, trichology/non-trichology,
+  authoritative source match, semantic entity match, off-topic filter,
+  backward-compat relevance_filter, score range, provenance stamping,
+  source_language, translated/expanded-query results, no duplicates across
+  queries, RWE-only, scientific regression, endpoint provenance, assistant
+  schema, canonical Italian query full pipeline). Full suite: 60 passed.

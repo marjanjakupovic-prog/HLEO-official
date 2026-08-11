@@ -838,6 +838,12 @@ class RWEItemCtx(BaseModel):
     relevance: str = "unknown"
     relevance_reason: Optional[str] = ""
     privacy_status: str = "redacted"
+    # Search-engine provenance (Phase: RWE Search Engine)
+    matched_query: Optional[str] = ""
+    matched_query_type: Optional[str] = ""
+    source_language: str = "en"
+    relevance_score: float = 0.0
+    match_reason: Optional[str] = ""
     metadata: dict = {}
 
 class SearchContext(BaseModel):
@@ -1201,8 +1207,22 @@ def assistant_chat(
             text_excerpt = (it.text or "").strip()
             if len(text_excerpt) > 350:
                 text_excerpt = text_excerpt[:340] + "…"
+            # Search-engine provenance — lets the Assistant cite which query /
+            # language surfaced each item and how it was matched.
+            prov_parts = []
+            if it.matched_query:
+                prov_parts.append(f"matched_query='{it.matched_query}'")
+            if it.matched_query_type:
+                prov_parts.append(f"type={it.matched_query_type}")
+            if it.source_language:
+                prov_parts.append(f"lang={it.source_language}")
+            if it.match_reason:
+                prov_parts.append(f"match={it.match_reason}")
+            if it.relevance_score:
+                prov_parts.append(f"score={it.relevance_score:.2f}")
+            prov_part = f" | {' '.join(prov_parts)}" if prov_parts else ""
             rwe_lines.append(
-                f"  [{i}] [{src_label} — {tier_label}]{date_part}{treat_part}\n"
+                f"  [{i}] [{src_label} — {tier_label}]{date_part}{treat_part}{prov_part}\n"
                 f"      {it.title or '(no title)'}\n"
                 f"      Text: {text_excerpt or 'N/A'}"
             )
