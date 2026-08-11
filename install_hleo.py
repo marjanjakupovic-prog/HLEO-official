@@ -55,23 +55,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ''',
 
-    "hleo_v1/requirements.txt": '''fastapi==0.104.1
-uvicorn[standard]==0.24.0.post1
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-pydantic==2.5.2
-pydantic-settings==2.1.0
-openai==1.3.5
-scrapy==2.11.0
-python-dotenv==1.0.0
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-mock==3.12.0
-pandas==2.1.3
-scikit-learn==1.3.2
-openpyxl==3.1.2
-jinja2==3.1.2
-python-multipart==0.0.6
+    "hleo_v1/requirements.txt": '''fastapi==0.141.1
+uvicorn[standard]==0.52.1
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+openai==2.53.0
+python-dotenv==1.2.2
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-mock==3.15.1
+jinja2==3.1.6
+requests==2.34.2
+beautifulsoup4==4.15.0
+praw==8.0.2
+ddgs==9.14.4
 ''',
 
     "hleo_v1/core/database.py": '''import os
