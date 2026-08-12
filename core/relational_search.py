@@ -462,40 +462,20 @@ class RelationalSearch:
         data = self._llm_json(prompt, max_tokens=900)
         return data.get("results", []) or []
 
-    # ── LLM helper (resilient to 429) ────────────────────────────────────────
+    # ── LLM helper (delegates retry to the central llm_guard) ─────────────────
+    #
+    # The guard is the ONLY retry boundary: MAX_TOTAL_ATTEMPTS=5, no nested
+    # retry. quota exhaustion raises QuotaExhaustedError (no retry); transient
+    # 429s and JSON/parse errors retry up to the cap. This method must NOT add
+    # its own retry loop on top — that would breach the absolute cap.
 
-    def _llm_json(self, prompt: str, max_tokens: int = 700, retries: int = 4) -> dict:
-        last_err: Exception | None = None
-        for attempt in range(retries):
-            try:
-                resp = self._client.chat.completions.create(
-                    model=MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    response_format={"type": "json_object"},
-                    max_tokens=max_tokens,
-                )
-                s = resp.choices[0].message.content.strip()
-                if s.startswith("```"):
-                    s = s.split("```", 2)[1]
-                    if s.startswith("json"):
-                        s = s[4:]
-                    s = s.strip()
-                    if s.endswith("```"):
-                        s = s[:-3]
-                return json.loads(s)
-            except json.JSONDecodeError as exc:
-                # gpt-4o-mini occasionally returns slightly malformed JSON (e.g. a
-                # trailing comma inside an array). Retry — temperature=0 usually
-                # yields a clean response on the next attempt.
-                last_err = exc
-                logger.debug("RelationalSearch: JSON parse error (attempt %d) — %s", attempt + 1, exc)
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            except Exception as exc:
-                msg = str(exc)
-                if "429" in msg or "rate" in msg.lower():
-                    time.sleep(8 * (attempt + 1))
-                    continue
-                raise
-        raise RuntimeError(f"LLM json call failed after retries: {last_err}")
+    def _llm_json(self, prompt: str, max_tokens: int = 700) -> dict:
+        from core.llm_guard import call_llm_json
+        return call_llm_json(
+            self._client,
+            messages=[{"role": "user", "content": prompt}],
+            model=MODEL,
+            temperature=0,
+            max_tokens=max_tokens,
+            operation="relational_search_llm",
+        )

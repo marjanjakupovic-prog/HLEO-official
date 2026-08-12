@@ -167,15 +167,14 @@ class QueryOrchestrator:
             f"\nQuery: {query}"
         )
 
-        resp = self._client.chat.completions.create(
-            model="gpt-4o-mini",
+        from core.llm_guard import call_llm_json
+        data = call_llm_json(
+            self._client,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            response_format={"type": "json_object"},
+            model="gpt-4o-mini",
             max_tokens=150,
+            operation="orchestrator_detect_translate",
         )
-
-        data = json.loads(resp.choices[0].message.content)
         lang     = str(data.get("lang", "und")).lower().strip()[:10]
         query_en = str(data.get("query_en", query)).strip()
 

@@ -258,6 +258,37 @@ class PatientExperience(Base):
     )
 
 
+class RWEProfile(Base):
+    """FASE 13: Structured RWE profile extracted from RWE items.
+
+    One row per RWE item that passes extraction. Bridges RWE search results
+    to Profiles and Testimonianze. Separate from PatientExperience (Reddit
+    OAuth) — RWE items come from the RWE pipeline (forums + openFDA).
+    """
+    __tablename__ = "hleo_rwe_profiles"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    episode_id       = Column(String, unique=True, index=True)
+    source           = Column(String, index=True)       # reddit|openfda_faers|calvizie|...
+    source_type      = Column(String)                   # community_forum|pharmacovigilance
+    evidence_tier    = Column(String, default="anecdotal")
+    source_url       = Column(String)
+    external_id      = Column(String, index=True)
+    title            = Column(Text)
+    raw_text         = Column(Text)
+    extracted_profile = Column(JSON)           # structured RWE profile dict
+    treatment        = Column(String)
+    condition        = Column(String)
+    experience_type  = Column(String, default="discussion")
+    query_context    = Column(String)
+    language         = Column(String, default="en")
+    is_testimonial   = Column(Boolean, default=False)   # curated for Testimonianze
+    ingested_at      = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class SourceAttribution(Base):
     """
     Links a clinical profile (or patient experience) to its provenance.

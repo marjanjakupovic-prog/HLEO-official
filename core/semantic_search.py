@@ -364,14 +364,14 @@ class SemanticSearch:
             "Output ONLY the JSON object, no explanation.\n"
             f"\nQuery: {query}"
         )
-        resp = self._client.chat.completions.create(
-            model="gpt-4o-mini",
+        from core.llm_guard import call_llm_json
+        data = call_llm_json(
+            self._client,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            response_format={"type": "json_object"},
+            model="gpt-4o-mini",
             max_tokens=300,
+            operation="semantic_extract_entities",
         )
-        data = json.loads(resp.choices[0].message.content)
         result = []
         for ent in data.get("entities", []):
             result.append(IntentEntity(
@@ -485,15 +485,17 @@ class SemanticSearch:
             f"Entities: {entity_list}\n"
             f"Original query: {intent.original_query}"
         )
-        resp = self._client.chat.completions.create(
-            model="gpt-4o-mini",
+        from core.llm_guard import call_llm_json
+        data = call_llm_json(
+            self._client,
             messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o-mini",
             temperature=0.3,
-            response_format={"type": "json_object"},
             max_tokens=600,
+            operation="semantic_generate_queries",
         )
-        data = json.loads(resp.choices[0].message.content)
-        return [str(q).strip() for q in data.get("queries", []) if q]
+        result = data.get("queries", [])
+        return [str(q).strip() for q in result if q]
 
     def _rank_queries(self, queries: list[str], intent: IntentResult) -> list[str]:
         """
@@ -718,14 +720,15 @@ class SemanticSearch:
                         f"{entity_list}. Make them wider in scope than the original "
                         "queries. Return JSON: {\"queries\": [str, ...]}."
                     )
-                    resp = self._client.chat.completions.create(
-                        model="gpt-4o-mini",
+                    from core.llm_guard import call_llm_json
+                    data = call_llm_json(
+                        self._client,
                         messages=[{"role": "user", "content": prompt}],
+                        model="gpt-4o-mini",
                         temperature=0.5,
-                        response_format={"type": "json_object"},
                         max_tokens=300,
+                        operation="semantic_fallback_expansion",
                     )
-                    data = json.loads(resp.choices[0].message.content)
                     candidates.extend(data.get("queries", []))
                 except Exception as exc:
                     logger.warning("Fallback LLM expansion failed: %s", exc)

@@ -60,8 +60,9 @@ class ArticleExtractor:
             "- Return ONLY a valid JSON object conforming strictly to the schema."
         )
 
-        response = self.client.chat.completions.create(
-            model=self.MODEL,
+        from core.llm_guard import call_llm_json
+        raw = call_llm_json(
+            self.client,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -72,11 +73,10 @@ class ArticleExtractor:
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
+            model=self.MODEL,
             temperature=0.0,
+            operation="article_extract",
         )
-
-        raw = json.loads(response.choices[0].message.content)
 
         # Validate against Pydantic model to ensure shape correctness
         profile = ClinicalProfile.model_validate(raw)

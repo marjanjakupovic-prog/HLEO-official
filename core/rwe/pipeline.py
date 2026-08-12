@@ -66,6 +66,122 @@ def _entity_terms(entities) -> List[str]:
     return terms
 
 
+def _split_entities(entities) -> Tuple[List[str], List[str], List[str]]:
+    """Split recognised entities into (drug_terms, event_terms, context_terms).
+
+    event_terms = symptoms + conditions (the 'event' side of a drug→event query).
+    drug_terms  = drugs + active ingredients (the 'exposure' side).
+    context_terms = any other entity types (procedures, organs, …) — light context boost.
+    Each list carries the canonical name plus a few aliases, lowercase.
+    """
+    drugs: List[str] = []
+    events: List[str] = []
+    context: List[str] = []
+    for etype, canonical, _ in entities or []:
+        canon = canonical.lower()
+        if etype == "drug" or etype == "active_ingredient":
+            drugs.append(canon)
+            for alias in DRUG_ALIASES.get(canonical, [])[:5]:
+                if len(alias) > 3:
+                    drugs.append(alias.lower())
+        elif etype in ("symptom", "adverse_effect", "disease", "condition"):
+            events.append(canon)
+            for alias in SYMPTOM_ALIASES.get(canonical, [])[:5]:
+                if len(alias) > 3:
+                    events.append(alias.lower())
+            for alias in CONDITION_ALIASES.get(canonical, [])[:5]:
+                if len(alias) > 3:
+                    events.append(alias.lower())
+        else:
+            context.append(canon)
+    return drugs, events, context
+
+
+# Semantic equivalents: terms that, when the event side of the query mentions
+# one of these, are treated as a match when found in a record's text/reactions.
+# This is the "hair shedding ≈ hair loss ≈ alopecia ≈ hair fall" bridge.
+_EVENT_SYNONYM_GROUPS: List[Tuple[List[str], List[str]]] = [
+    (
+        ["hair loss", "hair shedding", "alopecia", "hair fall", "hairfall",
+         "caduta capelli", "perdita di capelli", "perdita capelli",
+         "caduta dei capelli", "perdita dei capelli",
+         "chute de cheveux", "perte de cheveux", "perte de cheveu",
+         "haarausfall", "caída del cabello", "pérdida de cabello",
+         "hairedropping", "hairfallout"],
+        ["hair loss", "hair shedding", "alopecia", "hair fall", "hairfall",
+         "caduta", "perdita", "chute", "haarausfall", "caída",
+         "shedding", "thinning", "bald", "fell out", "fall out", "falling out",
+         "capelli", "cheveux"],
+    ),
+    (
+        ["sexual dysfunction", "disfunzione sessuale",
+         "libido loss", "lost libido", "low sex drive",
+         "calo del desiderio", "desiderio sessuale", "fame sessuale",
+         "dysfonction sexuelle", "libido vermindert",
+         "disfunción sexual", "disfunção sexual"],
+        ["sexual dysfunction", "libido", "sex drive", "erection", "erectile",
+         "impotence", "impotenza", "désir", "desiderio",
+         "sessual", "sex", "libido"],
+    ),
+    (
+        ["depression", "depresso", "deprimé", "deprimida"],
+        ["depression", "depressive", "depressed", "depress", "depresso",
+         "deprim", "mood"],
+    ),
+]
+
+
+def _event_match_terms(query_event_terms: List[str]) -> set:
+    """Expand query-side event terms to include their semantic equivalents.
+
+    Returns a set of lowercase substrings/tokens to look for in the record.
+    When a query event term (canonical or alias) belongs to a known synonym
+    group, all members of that group (and their match-tokens) are admitted.
+    """
+    out = set(t.lower() for t in query_event_terms if t)
+    for members, match_tokens in _EVENT_SYNONYM_GROUPS:
+        # Does the query reference any member of this concept group?
+        if any(m.lower() in out for m in members):
+            out.update(m.lower() for m in members)
+            out.update(t.lower() for t in match_tokens)
+    return out
+
+
+def _event_match(item_text_lower: str, query_event_terms: List[str]) -> Tuple[float, List[str]]:
+    """Score how well the item's event/reaction text matches the query's event.
+
+    Returns (0..1, matched_terms). A 0 means the record's reactions/text do not
+    express the event the query asks about (the "dutasteride + loss of
+    proprioception" for a "dutasteride induced hair shedding" query case).
+    """
+    if not query_event_terms:
+        # No event was recognised in the query — treat event_match as neutral.
+        return 0.5, []
+    terms = _event_match_terms(query_event_terms)
+    hits = [t for t in terms if t and t in item_text_lower]
+    if not hits:
+        return 0.0, []
+    # Saturate quickly: a couple of distinct event hits = strong event match.
+    score = min(1.0, 0.5 + 0.25 * len(set(hits)))
+    return score, sorted(set(hits))[:6]
+
+
+def _drug_match(item_text_lower: str, treatment_lower: str, query_drug_terms: List[str]) -> Tuple[float, List[str]]:
+    """Score how well the item references the query's drug/exposure.
+
+    For authoritative sources (openFDA), the drug is trusted to be present
+    server-side, so the treatment field is checked too.
+    """
+    if not query_drug_terms:
+        return 0.0, []
+    hay = f"{item_text_lower} {treatment_lower}"
+    hits = [t for t in query_drug_terms if t and t in hay]
+    if not hits:
+        return 0.0, []
+    score = min(1.0, 0.6 + 0.2 * len(set(hits)))
+    return score, sorted(set(hits))[:4]
+
+
 def _score_item(
     it: RWEItem,
     query: str,
@@ -75,46 +191,87 @@ def _score_item(
     """
     Semi-semantic relevance score (0.0–1.0) + human match reason.
 
-    Combines:
-      - authoritative source match (trusted server-side match → high floor)
-      - exact token overlap with the matched query
-      - entity overlap (recognised biomedical entities in the item text)
-      - synonym overlap (aliases of recognised entities)
+    Separates the two sides of a drug→event query:
+      - drug_match   : does the record reference the query's drug/exposure?
+      - event_match  : does the record's reaction/text express the query's
+                       event (semantically, incl. IT/FR/ES/DE equivalents)?
+
+    overall_relevance = weighted blend; drug-only matches (no event) score
+    LOW so a dutasteride+proprioception record does not surface for a
+    "dutasteride induced hair shedding" query.
+
+    For authoritative sources (openFDA), the drug is trusted as present
+    (server-side match), but the event is STILL verified against the record's
+    reaction text — authoritative does not override the event requirement.
     """
     q_tokens = _tokens(query)
-    body = f"{it.title} {it.text} {it.treatment or ''} {it.condition or ''}".lower()
-    body_tokens = _tokens(body)
+    body = f"{it.title} {it.text}".lower()
+    treatment_lower = (it.treatment or "").lower()
+    body_tokens = _tokens(f"{it.title} {it.text} {it.treatment or ''} {it.condition or ''}")
     overlap = q_tokens & body_tokens
     token_score = len(overlap) / max(1, len(q_tokens)) if q_tokens else 0.0
 
+    drug_terms, event_terms, context_terms = _split_entities(entities)
+
+    drug_score, drug_hits = _drug_match(body, treatment_lower, drug_terms)
+    event_score, event_hits = _event_match(body, event_terms)
+
+    # Context boost (light) — population/condition co-occurrence.
+    ctx_hits = [t for t in context_terms if t and t in body]
+    ctx_score = min(0.15, 0.05 * len(ctx_hits)) if context_terms else 0.0
+
+    # ── overall_relevance ──────────────────────────────────────────────────
+    # When the query has BOTH a drug and an event, both must be present for a
+    # high score. A drug-only match (event_score=0) is heavily penalised.
+    has_drug_and_event = bool(drug_terms) and bool(event_terms)
+
+    if is_authoritative_match:
+        # openFDA: trust the drug match (server-side), but still require the event.
+        drug_component = 1.0   # authoritative drug match is trusted present
+    else:
+        drug_component = drug_score
+
+    if has_drug_and_event:
+        if event_score == 0.0:
+            # The record does NOT express the queried event → low relevance.
+            base = 0.15 * drug_component + 0.0 + ctx_score
+            reason = (f"drug_match_only (drug={drug_hits[:2]}; "
+                      f"event_missing — queried event not in record)")
+            return round(min(1.0, base), 3), reason
+        # Both sides present — strong relevance.
+        base = 0.45 * drug_component + 0.45 * event_score + 0.10 * token_score + ctx_score
+        reason = (f"drug+event_match (drug={drug_hits[:2]}; "
+                  f"event={event_hits[:3]}; tokens={len(overlap)})")
+        return round(min(1.0, base), 3), reason
+
+    # Query has only a drug, or only an event, or neither recognised.
+    if drug_terms and not event_terms:
+        # Drug-only query: drug match is the signal.
+        base = 0.6 * drug_component + 0.3 * token_score + ctx_score
+        reason = f"drug_match (drug={drug_hits[:2]}; tokens={len(overlap)})"
+        return round(min(1.0, base), 3), reason
+    if event_terms and not drug_terms:
+        base = 0.6 * event_score + 0.3 * token_score + ctx_score
+        reason = f"event_match (event={event_hits[:3]}; tokens={len(overlap)})"
+        return round(min(1.0, base), 3), reason
+
+    # No structured entities — fall back to token/entity overlap.
     ent_terms = _entity_terms(entities)
     ent_hits = [t for t in ent_terms if t and t in body]
     entity_score = min(1.0, len(ent_hits) / 3.0) if ent_terms else 0.0
-
-    # Weighted blend: token overlap is the primary signal, entity overlap a
-    # semantic booster. Authoritative source matches get a high floor so they
-    # survive even when the text fields don't echo the query term verbatim
-    # (the openFDA case: the drug is in the report but not in the reaction text).
-    base = 0.5 * token_score + 0.5 * entity_score
-    if is_authoritative_match:
-        score = max(0.6, base + 0.35)
-        reason = (
-            f"authoritative_source_match (server-side match trusted; "
-            f"token={token_score:.2f}, entity={entity_score:.2f})"
-        )
-    elif token_score >= 0.5 and entity_score > 0:
-        score = max(base, 0.75)
+    if token_score >= 0.5 and entity_score > 0:
+        base = max(0.5 * token_score + 0.5 * entity_score, 0.75)
         reason = f"exact_keyword+semantic ({len(overlap)} tokens, {len(ent_hits)} entities)"
     elif token_score > 0:
-        score = base
+        base = 0.5 * token_score + 0.5 * entity_score
         reason = f"exact_keyword ({len(overlap)}/{len(q_tokens)} tokens: {sorted(overlap)})"
     elif entity_score > 0:
-        score = max(base, 0.4)
+        base = max(0.5 * token_score + 0.5 * entity_score, 0.4)
         reason = f"semantic_entity_match ({len(ent_hits)} entities: {ent_hits[:3]})"
     else:
-        score = 0.0
+        base = 0.0
         reason = "no keyword or entity overlap"
-    return round(min(1.0, score), 3), reason
+    return round(min(1.0, base), 3), reason
 
 
 def relevance_filter(
@@ -122,16 +279,24 @@ def relevance_filter(
     query: str,
     entities: Optional[list] = None,
     authoritative_sources: Optional[set] = None,
-    min_score: float = 0.01,
+    min_score: float = 0.20,
 ) -> List[RWEItem]:
     """
-    Semi-semantic relevance filter.
+    Semi-semantic relevance filter — respects the FULL intent of the query.
+
+    Splits the query into a DRUG/exposure side and an EVENT/symptom side, and
+    requires BOTH for a high score. A record that merely references the queried
+    drug but expresses an unrelated event (e.g. dutasteride + loss of
+    proprioception for a "dutasteride induced hair shedding" query) scores LOW
+    and is filtered out.
+
+    Authoritative sources (openFDA): the drug match is trusted server-side,
+    but the event is STILL verified against the record's reaction text —
+    authoritative does not override the event requirement.
 
     Marks each item with ``relevance`` (relevant|irrelevant), ``relevance_reason``,
     ``relevance_score`` (0–1), and ``match_reason``. Keeps only relevant items
-    (score ≥ min_score). Items from authoritative sources that matched the query
-    server-side are always kept — their match is trusted even when the query term
-    is absent from the item's text fields (fixes the openFDA shedding case).
+    (score ≥ min_score). Default min_score=0.20 filters drug-only false positives.
 
     Backward compatible: ``entities`` and ``authoritative_sources`` default to
     None/empty so the call ``relevance_filter(items, query)`` still works.
