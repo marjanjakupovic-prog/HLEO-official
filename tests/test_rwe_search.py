@@ -71,7 +71,7 @@ def _fake_faers_item(rid="FAERS-1", treatment="FINASTERIDE", text="alopecia; dec
         collection_method="official_api_no_key",
         external_id=rid,
         source_url=f"https://api.fda.gov/drug/event.json?search=safetyreportid:{rid}",
-        title=f"FAERS report {rid} — Alopecia",
+        title=f"FAERS report {rid}",
         text=text,
         date="20240101",
         language="en",
@@ -304,9 +304,10 @@ def test_non_trichology_query_still_runs():
 # ─── semi-semantic retrieval / relevance ────────────────────────────────────
 
 def test_authoritative_source_match_preserved():
-    """openFDA items with no text overlap are kept (authoritative server match)."""
+    """openFDA items are kept when the query is drug-only (drug present = relevant)."""
     from core.rwe.pipeline import relevance_filter
-    # FAERS report where the drug is NOT in the reaction text
+    # FAERS report where the drug is NOT in the reaction text, but the query
+    # only asks about the drug — so the drug match is sufficient.
     it = _fake_faers_item(text="headache; nausea", treatment="FINASTERIDE")
     out = relevance_filter(
         [it], "finasteride",
@@ -314,7 +315,78 @@ def test_authoritative_source_match_preserved():
     )
     assert len(out) == 1
     assert out[0].relevance == "relevant"
-    assert "authoritative" in (out[0].match_reason or "")
+    # Drug-only query → drug_match reason (authoritative drug match trusted)
+    assert "drug_match" in (out[0].match_reason or "")
+
+
+def test_authoritative_drug_only_filtered_when_event_missing():
+    """FAERS-23: drug match but event missing → FILTERED (no drug-only false positives).
+
+    This is the core bug fix: a "dutasteride induced hair shedding" query must
+    NOT surface a dutasteride + loss-of-proprioception record. The drug match
+    is trusted (authoritative), but the event (shedding) is verified against the
+    record's reaction text — and it's absent → low score → filtered.
+    """
+    from core.rwe.pipeline import relevance_filter
+    it = _fake_faers_item(
+        rid="PROP-1",
+        treatment="DUTASTERIDE",
+        text="loss of proprioception; balance disorder",
+    )
+    out = relevance_filter(
+        [it], "dutasteride induced hair shedding",
+        entities=[("drug", "dutasteride", 1.0), ("symptom", "hair shedding", 1.0)],
+    )
+    assert len(out) == 0, "drug-only match must NOT surface when event is missing"
+    assert it.relevance == "irrelevant"
+    assert "event_missing" in (it.match_reason or "")
+
+
+def test_authoritative_drug_plus_event_kept():
+    """FAERS-23b: drug match AND event present → KEPT with high score."""
+    from core.rwe.pipeline import relevance_filter
+    it = _fake_faers_item(
+        rid="SHED-1",
+        treatment="DUTASTERIDE",
+        text="alopecia; hair shedding; hair loss",
+    )
+    out = relevance_filter(
+        [it], "dutasteride induced hair shedding",
+        entities=[("drug", "dutasteride", 1.0), ("symptom", "hair shedding", 1.0)],
+    )
+    assert len(out) == 1
+    assert out[0].relevance == "relevant"
+    assert out[0].relevance_score >= 0.5
+    assert "drug+event_match" in (out[0].match_reason or "")
+
+
+def test_finasteride_shedding_keeps_only_event_matching():
+    """FAERS-23c: mixed batch — event-matching kept, event-missing filtered."""
+    from core.rwe.pipeline import relevance_filter
+    good = _fake_faers_item(rid="GOOD", treatment="FINASTERIDE",
+                            text="hair shedding; alopecia")
+    bad = _fake_faers_item(rid="BAD", treatment="FINASTERIDE",
+                           text="loss of proprioception; dizziness")
+    out = relevance_filter(
+        [good, bad], "finasteride induced shedding",
+        entities=[("drug", "finasteride", 1.0), ("symptom", "hair shedding", 1.0)],
+    )
+    ids = {it.external_id for it in out}
+    assert "GOOD" in ids
+    assert "BAD" not in ids
+
+
+def test_event_synonym_multilingual_match():
+    """FAERS-24: Italian 'caduta capelli' matches English 'hair shedding' record."""
+    from core.rwe.pipeline import relevance_filter
+    it = _fake_faers_item(rid="IT-1", treatment="FINASTERIDE",
+                          text="hair shedding; hair loss")
+    out = relevance_filter(
+        [it], "finasteride caduta capelli",
+        entities=[("drug", "finasteride", 1.0), ("symptom", "hair shedding", 1.0)],
+    )
+    assert len(out) == 1
+    assert out[0].relevance_score >= 0.5
 
 
 def test_semantic_entity_match_without_keyword():

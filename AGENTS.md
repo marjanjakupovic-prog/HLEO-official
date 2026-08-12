@@ -168,3 +168,28 @@ extraction + AI Clinical Assistant (RAG). Python 3.13.
   source_language, translated/expanded-query results, no duplicates across
   queries, RWE-only, scientific regression, endpoint provenance, assistant
   schema, canonical Italian query full pipeline). Full suite: 60 passed.
+
+
+## Dependencies (2026-08-12 audit)
+All deps in requirements.txt are at latest published versions and used in
+code. Verified pip index versions for each: fastapi 0.141.1, uvicorn 0.52.1,
+sqlalchemy 2.0.52, psycopg2-binary 2.9.12, pydantic 2.13.4, openai 3.0.0,
+python-dotenv 1.2.2, pytest 9.1.1, jinja2 3.1.6, requests 2.34.2,
+beautifulsoup4 4.15.0, praw 8.0.2, ddgs 9.14.4, httpx2 2.10.0.
+
+- openai 2.54.0 -> 3.0.0: only dep with an update available. v3.0.0 makes
+  HTTPX2 the default HTTP client (httpx no longer auto-installed). Codebase
+  already pins httpx2==2.10.0 and uses only from openai import OpenAI +
+  client.chat.completions.create(**kwargs) (unchanged API), so the upgrade
+  was a drop-in. All 165 tests pass + real LLM calls verified via
+  /assistant/compare and /synthesis/card.
+- No unused deps to prune: every requirements.txt entry is used directly
+  (fastapi, sqlalchemy, pydantic, openai, dotenv, pytest, requests, bs4, ddgs)
+  or at runtime/CLI (uvicorn server, jinja2 via FastAPI Jinja2Templates,
+  psycopg2 via SQLAlchemy driver string, httpx2 as openai transport, praw
+  lazy-imported in collectors/reddit.py).
+- Orphaned legacy code (NOT removed): app.py + ui/ (PySide6 Qt desktop
+  UI) is from the initial commit, unused by tests/Dockerfile/run_pipeline, and
+  depends on PySide6 which is NOT in requirements.txt and NOT installed. It is
+  superseded by the FastAPI web app (api/main.py + templates/index.html).
+  Left in place; flagged for user decision on whether to delete.

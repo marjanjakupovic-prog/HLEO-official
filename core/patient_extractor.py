@@ -65,8 +65,9 @@ class PatientExperienceExtractor:
             "- Return ONLY a valid JSON object conforming strictly to the schema."
         )
 
-        response = self.client.chat.completions.create(
-            model=self.MODEL,
+        from core.llm_guard import call_llm_json
+        raw = call_llm_json(
+            self.client,
             messages=[
                 {"role": "system",  "content": system_prompt},
                 {
@@ -77,11 +78,10 @@ class PatientExperienceExtractor:
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
+            model=self.MODEL,
             temperature=0.0,
+            operation="patient_experience_extract",
         )
-
-        raw = json.loads(response.choices[0].message.content)
 
         # Fill code-side field
         raw["post_length_chars"] = len(text or "")

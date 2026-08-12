@@ -50,8 +50,9 @@ class LLMExtractor:
 
         schema = ExtractedClinicalProfile.model_json_schema()
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        from core.llm_guard import call_llm_json
+        data = call_llm_json(
+            self.client,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -62,12 +63,10 @@ class LLMExtractor:
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
+            model=self.model,
             temperature=0.0,
+            operation="llm_extractor",
         )
-
-        content = response.choices[0].message.content
-        data = json.loads(content)
 
         from core.schemas import ExtractedClinicalProfile
         return ExtractedClinicalProfile.model_validate(data)

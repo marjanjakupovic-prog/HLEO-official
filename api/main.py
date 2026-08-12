@@ -35,6 +35,7 @@ from core.database import get_db, engine, Base
 from core.models import (
     ClinicalProfile, RawSource, AuditLog,
     PatientExperience, SourceAttribution, ChatSession, ChatMessage,
+    RWEProfile,
 )
 from api.partners import router as rwe_router
 from core.orchestrator import QueryOrchestrator
@@ -797,6 +798,186 @@ def rwe_search(
     return result.model_dump()
 
 
+# ── FASE 13-14: RWE Profiles + Testimonianze ────────────────────────────────
+
+class RWEExtractRequest(BaseModel):
+    """FASE 13: extract a profile from a single RWE item."""
+    title: str = ""
+    text: str = ""
+    source: str = ""
+    source_type: str = ""
+    evidence_tier: str = "anecdotal"
+    source_url: str = ""
+    external_id: str = ""
+    treatment: str = ""
+    condition: str = ""
+    experience_type: str = "discussion"
+    language: str = "en"
+    query_context: str = ""
+
+
+@app.post("/rwe/extract")
+def rwe_extract_profile(body: RWEExtractRequest, db: Session = Depends(get_db)):
+    """FASE 13: LLM-extract a structured profile from a single RWE item.
+
+    Persists the result as an RWEProfile row. Returns the extracted profile.
+    Skips items already extracted (external_id dedup).
+    """
+    import os, hashlib
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"error": "OPENAI_API_KEY not set."}
+
+    # Dedup by external_id if present
+    if body.external_id:
+        existing = db.query(RWEProfile).filter(
+            RWEProfile.external_id == body.external_id
+        ).first()
+        if existing:
+            return {
+                "episode_id": existing.episode_id,
+                "extracted_profile": existing.extracted_profile,
+                "already_existed": True,
+                "source": existing.source,
+            }
+
+    from core.rwe.profile_extractor import RWEProfileExtractor
+    extractor = RWEProfileExtractor()
+    try:
+        profile = extractor.extract(
+            title=body.title,
+            text=body.text,
+            source=body.source,
+            source_type=body.source_type,
+            treatment=body.treatment,
+            condition=body.condition,
+        )
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        logger.exception(f"/rwe/extract failed — {exc}")
+        return {"error": f"RWE extraction failed: {exc}"}
+
+    episode_id = "rwe-" + hashlib.md5(
+        f"{body.source}:{body.external_id or body.title}:{body.text[:100]}".encode()
+    ).hexdigest()[:16]
+
+    row = RWEProfile(
+        episode_id=episode_id,
+        source=body.source,
+        source_type=body.source_type,
+        evidence_tier=body.evidence_tier,
+        source_url=body.source_url,
+        external_id=body.external_id,
+        title=body.title,
+        raw_text=(body.text or "")[:5000],
+        extracted_profile=profile,
+        treatment=profile.get("treatment") or body.treatment,
+        condition=profile.get("condition") or body.condition,
+        experience_type=profile.get("experience_type") or body.experience_type,
+        query_context=body.query_context,
+        language=body.language,
+        is_testimonial=False,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "episode_id": row.episode_id,
+        "extracted_profile": profile,
+        "already_existed": False,
+        "source": row.source,
+    }
+
+
+@app.get("/rwe/profiles")
+def list_rwe_profiles(
+    db: Session = Depends(get_db),
+    source: Optional[str] = None,
+    treatment: Optional[str] = None,
+    limit: int = 50,
+):
+    """FASE 13: list stored RWE profiles."""
+    q = db.query(RWEProfile)
+    if source:
+        q = q.filter(RWEProfile.source == source)
+    if treatment:
+        q = q.filter(RWEProfile.treatment.ilike(f"%{treatment}%"))
+    rows = q.order_by(RWEProfile.ingested_at.desc()).limit(limit).all()
+    return {
+        "count": len(rows),
+        "profiles": [{
+            "episode_id": r.episode_id,
+            "source": r.source,
+            "source_type": r.source_type,
+            "evidence_tier": r.evidence_tier,
+            "title": r.title,
+            "treatment": r.treatment,
+            "condition": r.condition,
+            "experience_type": r.experience_type,
+            "is_testimonial": r.is_testimonial,
+            "extracted_profile": r.extracted_profile,
+            "source_url": r.source_url,
+            "external_id": r.external_id,
+            "query_context": r.query_context,
+            "language": r.language,
+            "ingested_at": r.ingested_at.isoformat() if r.ingested_at else None,
+        } for r in rows],
+    }
+
+
+@app.get("/rwe/testimonianze")
+def list_rwe_testimonianze(
+    db: Session = Depends(get_db),
+    treatment: Optional[str] = None,
+    limit: int = 20,
+):
+    """FASE 14: curated testimonials (is_testimonial=True) derived from RWE profiles.
+
+    A testimonial is a community_forum RWE profile curated for display.
+    FAERS records are excluded — spontaneous reports are NOT testimonials.
+    """
+    q = db.query(RWEProfile).filter(
+        RWEProfile.is_testimonial.is_(True),
+        RWEProfile.source_type == "community_forum",
+    )
+    if treatment:
+        q = q.filter(RWEProfile.treatment.ilike(f"%{treatment}%"))
+    rows = q.order_by(RWEProfile.ingested_at.desc()).limit(limit).all()
+    return {
+        "count": len(rows),
+        "testimonials": [{
+            "episode_id": r.episode_id,
+            "source": r.source,
+            "title": r.title,
+            "treatment": r.treatment,
+            "condition": r.condition,
+            "extracted_profile": r.extracted_profile,
+            "source_url": r.source_url,
+            "language": r.language,
+        } for r in rows],
+    }
+
+
+@app.post("/rwe/testimonianze/{episode_id}/curate")
+def curate_testimonial(episode_id: str, db: Session = Depends(get_db)):
+    """FASE 14: mark an RWE profile as a curated testimonial."""
+    row = db.query(RWEProfile).filter(RWEProfile.episode_id == episode_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="RWE profile not found.")
+    if row.source_type != "community_forum":
+        raise HTTPException(
+            status_code=400,
+            detail="Only community_forum profiles can be testimonials "
+                    "(FAERS records are not testimonials)."
+        )
+    row.is_testimonial = True
+    db.commit()
+    return {"episode_id": episode_id, "is_testimonial": True}
+
+
 # ── AI Clinical Assistant ─────────────────────────────────────────────────────
 
 from typing import List
@@ -906,6 +1087,29 @@ class SynthesisRequest(BaseModel):
     language: Optional[str] = "en"
     relation: Optional[SynthesisRelation] = None
     articles: List[SynthesisArticle] = []
+
+
+class CardSynthesisRequest(BaseModel):
+    """On-demand per-card synthesis (FASE 8).
+
+    Synthesises a SINGLE article or RWE record on demand — no auto-synthesis,
+    no global batch. The user clicks 'Ricava sintesi' on a specific card.
+    """
+    query: str
+    title: str
+    abstract: str = ""
+    text: str = ""
+    source: str = ""
+    url: str = ""
+    pmid: str = ""
+    doi: str = ""
+    nct_id: str = ""
+    external_id: str = ""
+    source_type: str = ""       # scientific_article | community_forum | pharmacovigilance
+    evidence_tier: str = ""     # RCT | anecdotal | spontaneous_report | …
+    treatment: str = ""
+    condition: str = ""
+    language: str = "en"        # output language
 
 
 @app.post("/assistant/chat")
@@ -1321,18 +1525,26 @@ def assistant_chat(
         f"{_lang_note}"
     )
 
-    # ── Call LLM ───────────────────────────────────────────────────
+    # ── Call LLM ───────────────────────────────────────────────────────────
     llm_messages = [{"role": "system", "content": system_prompt}]
     llm_messages.extend(messages_history)
     llm_messages.append({"role": "user", "content": body.message})
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=llm_messages,
-        temperature=0.2,
-        max_tokens=1800 if (has_search_articles or has_rwe) else 800,
-    )
-    assistant_text = response.choices[0].message.content
+    from core.llm_guard import call_llm, LLMCallError, QuotaExhaustedError
+    try:
+        assistant_text = call_llm(
+            client,
+            messages=llm_messages,
+            model="gpt-4o",
+            temperature=0.2,
+            max_tokens=1800 if (has_search_articles or has_rwe) else 800,
+            operation="assistant_chat",
+        )
+    except QuotaExhaustedError as exc:
+        return {"error": f"OpenAI quota esaurita: {exc}", "quota_exhausted": True}
+    except LLMCallError as exc:
+        logger.exception(f"/assistant/chat LLM failed — {exc}")
+        return {"error": f"Assistant LLM call failed after retries: {exc}"}
 
     # ── Persist messages ───────────────────────────────────────────
     db.add(ChatMessage(
@@ -1472,22 +1684,20 @@ def synthesize(body: SynthesisRequest):
     )
 
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o",
+        from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
+        parsed = call_llm_json(
+            client,
             messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o",
             temperature=0.2,
-            response_format={"type": "json_object"},
             max_tokens=2200,
+            operation="scientific_synthesis",
         )
-        s = resp.choices[0].message.content.strip()
-        if s.startswith("```"):
-            s = s.split("```", 2)[1]
-            if s.startswith("json"):
-                s = s[4:]
-            s = s.strip()
-            if s.endswith("```"):
-                s = s[:-3]
-        parsed = _json.loads(s)
+    except QuotaExhaustedError as exc:
+        return {"error": f"OpenAI quota esaurita: {exc}", "quota_exhausted": True}
+    except LLMCallError as exc:
+        logger.exception(f"/synthesis failed — {exc}")
+        return {"error": f"Synthesis failed after retries: {exc}"}
     except _json.JSONDecodeError as exc:
         logger.exception(f"/synthesis: JSON parse error — {exc}")
         return {"error": f"Synthesis returned malformed JSON: {exc}"}
@@ -1501,6 +1711,237 @@ def synthesize(body: SynthesisRequest):
         "query":    body.query,
         "language": body.language,
     }
+
+
+# ── FASE 8: On-demand per-card synthesis ────────────────────────────────────
+_CARD_SYNTHESIS_PROMPT = """You are a clinical evidence synthesiser. Produce a CONCISE on-demand synthesis of the SINGLE source below, in the context of the user's query.
+
+Return ONLY a JSON object with these keys:
+{
+  "summary": "2-4 sentence summary of what THIS source says about the query",
+  "key_points": ["point 1", "point 2", ...],
+  "relevance_to_query": "direct|indirect|background",
+  "evidence_type": "scientific|experiential|spontaneous_report",
+  "confidence": {"level": "high|moderate|low", "rationale": "..."},
+  "limitations": ["limitation 1", ...]
+}
+
+Rules:
+- Summarise ONLY this one source. Do NOT invent data from other sources.
+- For scientific articles: cite the study design and sample size if stated.
+- For RWE/community posts: clearly label as patient-reported anecdotal evidence.
+- For FAERS records: label as spontaneous adverse-event report, NOT clinical proof.
+- key_points: 2-5 bullet points, each ≤120 chars.
+- relevance_to_query: how directly this source addresses the user's question.
+- Be neutral and evidence-based. Do NOT give medical advice.
+"""
+
+
+@app.post("/synthesis/card")
+def synthesize_card(body: CardSynthesisRequest):
+    """FASE 8: on-demand synthesis of a SINGLE article/RWE record.
+
+    No auto-synthesis, no batch. The user explicitly requests synthesis for one
+    card. Returns a compact structured summary with provenance (source id/type).
+    """
+    import os
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503,
+                            detail="Card synthesis requires OPENAI_API_KEY.")
+
+    content_text = (body.abstract or body.text or "").strip()
+    if not content_text:
+        return {"error": "No content to synthesise (abstract/text required)."}
+
+    # Build provenance identifier
+    ident = (body.pmid or body.doi or body.nct_id
+             or body.external_id or body.url or body.source or "")
+    if body.pmid:
+        ident_str = f"PMID {body.pmid}"
+    elif body.doi:
+        ident_str = f"DOI {body.doi}"
+    elif body.nct_id:
+        ident_str = f"NCT {body.nct_id}"
+    elif body.external_id:
+        ident_str = f"ID {body.external_id}"
+    else:
+        ident_str = ident
+    source_label = body.source or (body.source_type or "unknown")
+    tier_label = body.evidence_tier or ""
+
+    _LANG_MAP = {
+        "it": "Italian", "en": "English", "fr": "French",
+        "de": "German",  "es": "Spanish", "pt": "Portuguese",
+    }
+    _resp_lang = _LANG_MAP.get(body.language or "en", "English")
+    _lang_note = (
+        f"\n\nIMPORTANT: respond entirely in {_resp_lang}."
+        if _resp_lang != "English" else ""
+    )
+
+    meta_bits = []
+    if body.treatment:
+        meta_bits.append(f"Treatment: {body.treatment}")
+    if body.condition:
+        meta_bits.append(f"Condition: {body.condition}")
+    if tier_label:
+        meta_bits.append(f"Evidence tier: {tier_label}")
+    meta_str = "\n".join(meta_bits)
+
+    prompt = (
+        f"{_CARD_SYNTHESIS_PROMPT}\n\n"
+        f"=== USER QUERY ===\n{body.query}\n\n"
+        f"=== SOURCE ===\n"
+        f"[{source_label}] {ident_str}\n"
+        f"Title: {body.title}\n"
+        + (f"{meta_str}\n" if meta_str else "")
+        + f"Content:\n{content_text[:2000]}\n"
+        f"{_lang_note}"
+    )
+
+    from openai import OpenAI
+    from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
+    client = OpenAI(api_key=api_key)
+    try:
+        parsed = call_llm_json(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o",
+            temperature=0.2,
+            max_tokens=800,
+            operation="card_synthesis",
+        )
+    except QuotaExhaustedError as exc:
+        return {"error": f"OpenAI quota esaurita: {exc}", "quota_exhausted": True}
+    except LLMCallError as exc:
+        logger.exception(f"/synthesis/card failed — {exc}")
+        return {"error": f"Card synthesis failed after retries: {exc}"}
+    except Exception as exc:
+        logger.exception(f"/synthesis/card failed — {exc}")
+        return {"error": f"Card synthesis failed: {exc}"}
+
+    # Attach provenance
+    parsed["source"] = source_label
+    parsed["source_id"] = ident_str
+    parsed["evidence_tier"] = tier_label
+    parsed["query"] = body.query
+    parsed["language"] = body.language
+    return parsed
+
+
+# ── FASE 15: AI Assistant — Scientific vs RWE structured comparison ────────
+
+class CompareRequest(BaseModel):
+    """FASE 15: structured comparison of scientific evidence vs RWE for a query."""
+    query: str
+    search_query: str = ""
+    detected_language: str = "en"
+    language: str = "en"
+    scientific_articles: List[SearchArticleCtx] = []
+    rwe_evidence: List[RWEItemCtx] = []
+
+
+@app.post("/assistant/compare")
+def assistant_compare(body: CompareRequest):
+    """FASE 15: structured Scientific vs RWE comparison.
+
+    Produces a structured comparison showing where scientific evidence and RWE
+    agree, diverge, or where RWE fills gaps the literature doesn't cover.
+    RWE is NEVER presented as clinical proof — always labelled as anecdotal /
+    spontaneous report.
+    """
+    import os
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"error": "OPENAI_API_KEY not set."}
+
+    if not body.scientific_articles and not body.rwe_evidence:
+        return {"error": "No evidence provided for comparison."}
+
+    from openai import OpenAI
+    from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
+    client = OpenAI(api_key=api_key)
+
+    # Format scientific articles
+    sci_lines = []
+    for i, a in enumerate(body.scientific_articles[:10]):
+        ident = a.pmid or a.doi or a.nct_id or a.url or ""
+        sci_lines.append(
+            f"[S{i}] {a.source} | {ident} — {a.title}\n"
+            f"    {(a.abstract or '')[:600]}"
+        )
+    sci_block = "\n".join(sci_lines) or "(no scientific articles)"
+
+    # Format RWE items
+    rwe_lines = []
+    for i, r in enumerate(body.rwe_evidence[:10]):
+        rwe_lines.append(
+            f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
+            f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
+        )
+    rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
+
+    _LANG_MAP = {
+        "it": "Italian", "en": "English", "fr": "French",
+        "de": "German",  "es": "Spanish", "pt": "Portuguese",
+    }
+    _resp_lang = _LANG_MAP.get(body.language or "en", "English")
+    _lang_note = (
+        f"\n\nIMPORTANT: respond entirely in {_resp_lang}."
+        if _resp_lang != "English" else ""
+    )
+
+    prompt = (
+        "You are a clinical evidence analyst. Compare the SCIENTIFIC evidence "
+        "with the REAL-WORLD EVIDENCE (RWE) for the user's query.\n\n"
+        "Return ONLY a JSON object with these keys:\n"
+        "{\n"
+        '  "scientific_consensus": "1-3 sentences: what does the literature conclude?",\n'
+        '  "rwe_consensus": "1-3 sentences: what do patients/reports describe?",\n'
+        '  "agreements": ["point where RWE supports the literature", ...],\n'
+        '  "divergences": ["point where RWE differs from the literature", ...],\n'
+        '  "gaps_filled_by_rwe": ["aspect RWE covers that the literature does not", ...],\n'
+        '  "evidence_quality_note": "reminder: RWE is anecdotal/spontaneous, not proof",\n'
+        '  "practical_takeaway": "1-2 sentences: what this means for the patient",\n'
+        '  "confidence": {"level": "high|moderate|low", "rationale": "..."}\n'
+        "}\n\n"
+        "Rules:\n"
+        "- NEVER present RWE as clinical proof. Always label it as anecdotal or "
+        "spontaneous report.\n"
+        "- Be neutral and evidence-based. Do NOT give medical advice.\n"
+        "- If one side is empty, state that explicitly.\n"
+        f"{_lang_note}\n\n"
+        f"=== USER QUERY ===\n{body.query}\n\n"
+        f"=== SCIENTIFIC EVIDENCE ({len(body.scientific_articles)}) ===\n{sci_block}\n\n"
+        f"=== REAL-WORLD EVIDENCE ({len(body.rwe_evidence)}) ===\n{rwe_block}\n"
+    )
+
+    try:
+        parsed = call_llm_json(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o",
+            temperature=0.2,
+            max_tokens=1500,
+            operation="assistant_compare",
+        )
+    except QuotaExhaustedError as exc:
+        return {"error": f"OpenAI quota esaurita: {exc}", "quota_exhausted": True}
+    except LLMCallError as exc:
+        logger.exception(f"/assistant/compare failed — {exc}")
+        return {"error": f"Comparison failed after retries: {exc}"}
+    except Exception as exc:
+        logger.exception(f"/assistant/compare failed — {exc}")
+        return {"error": f"Comparison failed: {exc}"}
+
+    parsed["query"] = body.query
+    parsed["language"] = body.language
+    parsed["scientific_count"] = len(body.scientific_articles)
+    parsed["rwe_count"] = len(body.rwe_evidence)
+    return parsed
 
 
 @app.get("/assistant/sessions/{session_id}")
@@ -1585,16 +2026,20 @@ async def translate_text(body: TranslateRequest):
     )
 
     from openai import OpenAI
+    from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
     client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        max_tokens=1500,
-        temperature=0.2,
-    )
+    try:
+        result = call_llm_json(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o",
+            temperature=0.2,
+            max_tokens=1500,
+            operation="translate",
+        )
+    except (LLMCallError, QuotaExhaustedError) as exc:
+        raise HTTPException(status_code=503, detail=f"Translation failed: {exc}")
 
-    result = _json.loads(response.choices[0].message.content)
     out = {
         "translation":  result.get("translation", ""),
         "summary":      result.get("summary", ""),
