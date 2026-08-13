@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 from fastapi import FastAPI, Depends, Query, Request, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,7 @@ from core.models import (
     RWEProfile,
 )
 from api.partners import router as rwe_router
+from api.admin import router as admin_router
 from core.orchestrator import QueryOrchestrator
 
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +65,7 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 app.include_router(rwe_router)
+app.include_router(admin_router)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -222,9 +224,16 @@ def search(q: str = Query(..., description="Search query"),
       - global: broad exploratory keyword pipeline (orchestrator + collect),
         no relational filter, all sources including Reddit.
 
-    When called without `mode`, defaults to scientific (preserves prior behavior
-    when the LLM key is available).
+    ``mode=rwe`` is NOT a scientific mode — it must use the dedicated RWE
+    pipeline at ``GET /rwe/search``. To prevent silently returning scientific
+    results under an RWE label, we reject it here with an explicit 400.
     """
+    if mode == "rwe":
+        raise HTTPException(
+            status_code=400,
+            detail="mode='rwe' is not supported on /search. Use GET /rwe/search?q= instead.",
+        )
+
     from core.pipeline import HLEOPipeline
 
     if mode == "scientific":
@@ -892,6 +901,196 @@ def rwe_extract_profile(body: RWEExtractRequest, db: Session = Depends(get_db)):
     }
 
 
+# ── FASE 13b: Batch extraction from real RWE search items ────────────────────
+
+class RWEBatchExtractItem(BaseModel):
+    """One RWE item from the current RWE search, sent by the frontend.
+
+    These are the REAL items returned by /rwe/search — not a re-collection
+    of Reddit. The backend extracts a structured profile from each and
+    persists it as an RWEProfile (and, for community_forum sources, also
+    surfaces it on the Experiences page).
+    All fields are Optional so that null values from /rwe/search are accepted.
+    """
+    source: Optional[str] = ""
+    source_type: Optional[str] = ""
+    evidence_tier: Optional[str] = "anecdotal"
+    collection_method: Optional[str] = ""
+    source_url: Optional[str] = ""
+    external_id: Optional[str] = ""
+    title: Optional[str] = ""
+    text: Optional[str] = ""
+    date: Optional[str] = ""
+    language: Optional[str] = "en"
+    topic: Optional[str] = ""
+    treatment: Optional[str] = ""
+    condition: Optional[str] = ""
+    experience_type: Optional[str] = "discussion"
+
+    model_config = {"extra": "ignore"}
+
+
+class RWEBatchExtractRequest(BaseModel):
+    """Batch of RWE items to extract experiences from."""
+    query: Optional[str] = ""
+    items: List[RWEBatchExtractItem] = []
+
+    model_config = {"extra": "ignore"}
+
+
+@app.post("/rwe/extract-batch")
+def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db)):
+    """Extract structured experiences from the REAL RWE items in the current
+    RWE search.
+
+    Does NOT re-collect Reddit. Accepts the items returned by /rwe/search and
+    runs the RWE profile extractor on each, persisting RWEProfile rows with
+    full provenance. Returns a status report (found/extracted/updated/skipped/
+    errors). When no items are provided, returns a clear message and does NOT
+    simulate any extraction.
+    """
+    import os, hashlib
+
+    found = len(body.items)
+    if found == 0:
+        return {
+            "query": body.query,
+            "rwe_records_found": 0,
+            "experiences_extracted": 0,
+            "profiles_created": 0,
+            "profiles_updated": 0,
+            "skipped": 0,
+            "errors": 0,
+            "error_details": [],
+            "message": "Non sono disponibili record RWE da estrarre.",
+        }
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return {
+            "query": body.query,
+            "rwe_records_found": found,
+            "experiences_extracted": 0,
+            "profiles_created": 0,
+            "profiles_updated": 0,
+            "skipped": 0,
+            "errors": found,
+            "error_details": [{"error": "OPENAI_API_KEY not set."}],
+            "message": "OPENAI_API_KEY non configurata — estrazione LLM non disponibile.",
+        }
+
+    from core.rwe.profile_extractor import RWEProfileExtractor
+    extractor = RWEProfileExtractor()
+
+    created = 0
+    updated = 0
+    skipped = 0
+    errors = 0
+    error_details = []
+    results = []
+
+    for it in body.items:
+        # Dedup by (source, external_id) — if external_id missing, fall back to
+        # a content hash so the same item isn't extracted twice.
+        dedup_key = it.external_id or hashlib.md5(
+            f"{it.source}:{it.title}:{(it.text or '')[:120]}".encode()
+        ).hexdigest()[:16]
+
+        existing = None
+        if it.external_id:
+            existing = db.query(RWEProfile).filter(
+                RWEProfile.external_id == it.external_id
+            ).first()
+        if existing is None:
+            existing = db.query(RWEProfile).filter(
+                RWEProfile.episode_id == f"rwe-{dedup_key}"
+            ).first()
+
+        if existing:
+            skipped += 1
+            results.append({
+                "episode_id": existing.episode_id,
+                "source": existing.source,
+                "status": "already_exists",
+            })
+            continue
+
+        # Skip near-empty items — nothing to extract.
+        if not (it.title or "").strip() and not (it.text or "").strip():
+            skipped += 1
+            error_details.append({"source": it.source, "error": "empty content — skipped."})
+            continue
+
+        try:
+            profile = extractor.extract(
+                title=it.title,
+                text=it.text,
+                source=it.source,
+                source_type=it.source_type,
+                treatment=it.treatment,
+                condition=it.condition,
+            )
+        except RuntimeError as exc:
+            errors += 1
+            error_details.append({"source": it.source, "error": str(exc)})
+            continue
+        except Exception as exc:
+            db.rollback()
+            errors += 1
+            error_details.append({"source": it.source, "error": str(exc)})
+            continue
+
+        episode_id = f"rwe-{dedup_key}"
+        row = RWEProfile(
+            episode_id=episode_id,
+            source=it.source,
+            source_type=it.source_type,
+            evidence_tier=it.evidence_tier,
+            source_url=it.source_url,
+            external_id=it.external_id or dedup_key,
+            title=it.title,
+            raw_text=(it.text or "")[:5000],
+            extracted_profile=profile,
+            treatment=profile.get("treatment") or it.treatment,
+            condition=profile.get("condition") or it.condition,
+            experience_type=profile.get("experience_type") or it.experience_type,
+            query_context=body.query,
+            language=it.language,
+            is_testimonial=False,
+        )
+        db.add(row)
+        try:
+            db.commit()
+            db.refresh(row)
+            created += 1
+            results.append({
+                "episode_id": episode_id,
+                "source": it.source,
+                "status": "created",
+            })
+        except Exception as exc:
+            db.rollback()
+            errors += 1
+            error_details.append({"source": it.source, "error": f"DB error: {exc}"})
+
+    return {
+        "query": body.query,
+        "rwe_records_found": found,
+        "experiences_extracted": created,
+        "profiles_created": created,
+        "profiles_updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details,
+        "results": results,
+        "message": (
+            f"Estratte {created} esperienze da {found} record RWE "
+            f"({skipped} saltati, {errors} errori)."
+            if found else "Non sono disponibili record RWE da estrarre."
+        ),
+    }
+
+
 @app.get("/rwe/profiles")
 def list_rwe_profiles(
     db: Session = Depends(get_db),
@@ -979,8 +1178,6 @@ def curate_testimonial(episode_id: str, db: Session = Depends(get_db)):
 
 
 # ── AI Clinical Assistant ─────────────────────────────────────────────────────
-
-from typing import List
 
 class SearchArticleCtx(BaseModel):
     """One article from the active search, sent by the frontend."""
@@ -1390,10 +1587,18 @@ def assistant_chat(
         )
 
     # ── RWE evidence block (kept strictly separate from scientific) ──
-    # Built only when the frontend forwarded RWE items. RWE never overrides
-    # scientific evidence; it supplements it in a distinct, labelled section.
+    # Built ONLY when the frontend forwarded real RWE items. When rwe_evidence
+    # is empty, the prompt must NOT list or hint at RWE sources as available —
+    # the Assistant may only cite sources whose records are actually in context.
     rwe_block = ""
     has_rwe = bool(sc and sc.rwe_evidence)
+    # Source-label map is reused only to format items that are ACTUALLY present.
+    _RWE_SRC_LABELS = {
+        "reddit": "Reddit", "openfda_faers": "openFDA FAERS",
+        "calvizie": "Calvizie.net", "hairlosstalk": "HairLossTalk",
+        "hairlossexperiences": "HairLossExperiences",
+        "maladiesrares": "MaladiesRaresInfo (FR)",
+    }
     if has_rwe:
         rwe_items = sc.rwe_evidence
         rwe_lines = []
@@ -1403,19 +1608,12 @@ def assistant_chat(
                 "spontaneous_report": "spontaneous report (pharmacovigilance)",
                 "survey": "survey",
             }.get(it.evidence_tier, it.evidence_tier)
-            src_label = {
-                "reddit": "Reddit", "openfda_faers": "openFDA FAERS",
-                "calvizie": "Calvizie.net", "hairlosstalk": "HairLossTalk",
-                "hairlossexperiences": "HairLossExperiences",
-                "maladiesrares": "MaladiesRaresInfo (FR)",
-            }.get(it.source, it.source)
+            src_label = _RWE_SRC_LABELS.get(it.source, it.source)
             date_part = f" ({it.date})" if it.date else ""
             treat_part = f" | Treatment: {it.treatment}" if it.treatment else ""
             text_excerpt = (it.text or "").strip()
             if len(text_excerpt) > 350:
                 text_excerpt = text_excerpt[:340] + "…"
-            # Search-engine provenance — lets the Assistant cite which query /
-            # language surfaced each item and how it was matched.
             prov_parts = []
             if it.matched_query:
                 prov_parts.append(f"matched_query='{it.matched_query}'")
@@ -1434,8 +1632,7 @@ def assistant_chat(
                 f"      Text: {text_excerpt or 'N/A'}"
             )
         rwe_source_labels = sorted(set(
-            {"reddit": "Reddit", "openfda_faers": "openFDA FAERS", "calvizie": "Calvizie.net", "hairlosstalk": "HairLossTalk", "hairlossexperiences": "HairLossExperiences", "maladiesrares": "MaladiesRaresInfo (FR)"}.get(i.source, i.source)
-            for i in rwe_items
+            _RWE_SRC_LABELS.get(i.source, i.source) for i in rwe_items
         ))
         rwe_block = (
             f"══ REAL-WORLD EVIDENCE (RWE) — {len(rwe_items)} item(s) from: "
@@ -1456,8 +1653,24 @@ def assistant_chat(
             "under a 'Testimonianze e discussioni' heading, and explicitly state that "
             "these are patient-reported experiences, not clinical evidence, and recommend "
             "consulting the scientific literature / a clinician.\n"
-            "- Preserve provenance: every RWE claim must cite its [RWE: <Source>] origin.\n"
+            "- Preserve provenance: every RWE claim must cite its [RWE: <Source>] origin "
+            "using ONLY the sources listed above.\n"
             "- Respect privacy_status: never attribute statements to named individuals.\n"
+            "══════════════════════════════════════════\n"
+        )
+    else:
+        # No RWE items in context — the Assistant MUST NOT invent or cite any
+        # RWE source. This block makes the absence explicit.
+        rwe_block = (
+            "══ REAL-WORLD EVIDENCE (RWE) — 0 item(s) ══\n"
+            "No real-world evidence (patient experiences, community discussions, or "
+            "pharmacovigilance reports) is available in the current session.\n"
+            "You MUST NOT cite, mention, or reference any RWE source (e.g. Reddit, "
+            "openFDA FAERS, community forums) as if it had been consulted. You may only "
+            "cite sources whose records appear in the context above.\n"
+            "If the user asks about patient experiences / RWE, state explicitly: "
+            "'No RWE records are available in the current session.' "
+            "Do not fabricate testimonials, forum quotes, or adverse-event reports.\n"
             "══════════════════════════════════════════\n"
         )
 
@@ -1490,6 +1703,34 @@ def assistant_chat(
         "══════════════════════════════════════════"
     )
 
+    # Dynamic citation guidance: list only RWE sources that are ACTUALLY present.
+    if has_rwe:
+        _present_rwe_sources = sorted(set(
+            _RWE_SRC_LABELS.get(i.source, i.source) for i in sc.rwe_evidence
+        ))
+        _rwe_cite_examples = ", ".join(f"'[RWE: {s}]'" for s in _present_rwe_sources)
+        _rwe_rule_block = (
+            "- When RWE items are present in the REAL-WORLD EVIDENCE block below, you may "
+            f"cite them inline using ONLY these labels: {_rwe_cite_examples}. "
+            "Do not invent or cite any RWE source not listed there.\n"
+            "- Keep scientific evidence and RWE strictly separate: never present a testimonial "
+            "or a spontaneous adverse-event report as established clinical fact.\n"
+            "- When only RWE is present (no scientific articles), answer under a "
+            "'Testimonianze e discussioni' heading using the RWE items, and explicitly state they "
+            "are patient-reported experiences, not clinical evidence.\n"
+            "- When both scientific and RWE are present, include BOTH a scientific section AND a "
+            "'Testimonianze e discussioni' section, plus a 'Confronto' (comparison) section.\n"
+        )
+    else:
+        _rwe_rule_block = (
+            "- No RWE is present in this session. You MUST NOT cite, mention, or reference "
+            "any RWE source (Reddit, openFDA FAERS, community forums, etc.) as if it had been "
+            "consulted. If asked about patient experiences / RWE, state: 'No RWE records are "
+            "available in the current session.' Do not fabricate testimonials or reports.\n"
+            "- Keep scientific evidence and RWE strictly separate: never present a testimonial "
+            "or a spontaneous adverse-event report as established clinical fact.\n"
+        )
+
     system_prompt = (
         "You are HLEO Clinical Assistant, an AI research assistant for clinicians and "
         "researchers. You synthesize scientific evidence and communicate clinical conclusions.\n\n"
@@ -1503,19 +1744,13 @@ def assistant_chat(
         "articles are available.\n"
         "  4. GENERAL KNOWLEDGE — only when (1), (2) and (3) are all insufficient.\n\n"
         "You always:\n"
-        "- Cite sources inline (e.g. '[PubMed]', '[Europe PMC]', '[RWE: Reddit]', "
-        "'[RWE: openFDA FAERS]', '[HLEO DB]').\n"
-        "- Keep scientific evidence and RWE strictly separate: never present a testimonial "
-        "or a spontaneous adverse-event report as established clinical fact.\n"
+        f"- Cite sources inline (e.g. '[PubMed]', '[Europe PMC]', {_rwe_cite_examples if has_rwe else ''} "
+        "'[HLEO DB]'). Only cite a source whose record actually appears in the context below.\n"
+        f"{_rwe_rule_block}"
         "- Acknowledge uncertainty; never overstate evidence strength.\n"
         "- Recommend consulting a qualified clinician for personal medical decisions.\n"
         "- When scientific search results are present, follow the CLINICAL REASONING ENGINE "
         "in Priority 1 exactly — synthesis and clinical judgment first, individual studies last.\n"
-        "- When only RWE is present (no scientific articles), answer under a "
-        "'Testimonianze e discussioni' heading using the RWE items, and explicitly state they "
-        "are patient-reported experiences, not clinical evidence.\n"
-        "- When both scientific and RWE are present, include BOTH a scientific section AND a "
-        "'Testimonianze e discussioni' section, plus a 'Confronto' (comparison) section.\n"
         "- When no search results are present at all, answer concisely (3–6 sentences) using "
         "HLEO DB then general knowledge.\n\n"
         f"{search_block}"

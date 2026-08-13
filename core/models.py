@@ -145,6 +145,15 @@ class SourceRegistry(Base):
     integration_type = Column(String)   # api|licensed_dataset|rss|manual_import|research_collaboration
     source_type      = Column(String)   # rest_api|graphql|sftp|email|manual …
     data_category    = Column(String)   # patient_experiences|clinical_outcomes|survey_data|discussion_posts
+    # Extensible 4-bucket classification used by the runtime pipeline + UI:
+    #   scientific | rwe_experience | pharmacovigilance | other
+    category         = Column(String, default="scientific")
+    # Collector key that the runtime pipeline dispatches to (e.g. "openfda_faers",
+    # "calvizie", "pubmed"). Lets the admin map a registry row to the real
+    # collector without storing secrets or URLs.
+    runtime_collector   = Column(String)
+    requires_credentials = Column(Boolean, default=False)
+    credentials_env_vars = Column(JSON)   # list of env-var names needed, e.g. ["REDDIT_CLIENT_ID","REDDIT_CLIENT_SECRET"]
     connection_spec  = Column(JSON)     # field schema — no secrets stored here
     evidence_level   = Column(String)   # anecdotal|observational|survey|registry
     population_tags  = Column(JSON)

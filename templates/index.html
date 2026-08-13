@@ -275,6 +275,57 @@
     }
     html.dark  .contact-chip { background:#161b22; border-color:#21262d; color:#8b949e; }
     html.light .contact-chip { background:#f8fafc; border-color:#e2e8f0; color:#64748b; }
+
+    /* ── HLEO Design System — shared tokens & category badges ──────────── */
+    :root {
+      --hleo-accent: #3b82f6;        /* electric blue (primary) */
+      --hleo-accent-dim: #2563eb;
+      --hleo-navy: #0d1117;
+      --hleo-card: #161b22;
+      --hleo-border: #21262d;
+      --hleo-radius: 12px;
+      /* Category palette */
+      --cat-scientific: #3b82f6;       /* blue */
+      --cat-rwe: #a855f7;              /* violet */
+      --cat-pharma: #f59e0b;           /* amber */
+      --cat-other: #64748b;            /* slate */
+    }
+    .cat-badge {
+      display:inline-flex; align-items:center; gap:.25rem;
+      padding:.15rem .5rem; border-radius:9999px;
+      font-size:.62rem; font-weight:600; letter-spacing:.02em;
+      border:1px solid; text-transform:uppercase; white-space:nowrap;
+    }
+    .cat-badge.scientific { color:var(--cat-scientific); border-color:rgba(59,130,246,.4); background:rgba(59,130,246,.1); }
+    .cat-badge.rwe { color:var(--cat-rwe); border-color:rgba(168,85,247,.4); background:rgba(168,85,247,.1); }
+    .cat-badge.pharmacovigilance { color:var(--cat-pharma); border-color:rgba(245,158,11,.4); background:rgba(245,158,11,.1); }
+    .cat-badge.other { color:var(--cat-other); border-color:rgba(100,116,139,.4); background:rgba(100,116,139,.1); }
+    .pill {
+      display:inline-flex; align-items:center; gap:.25rem;
+      padding:.15rem .5rem; border-radius:9999px;
+      font-size:.65rem; font-weight:500; border:1px solid;
+    }
+    html.dark  .pill { background:#161b22; border-color:#21262d; color:#8b949e; }
+    html.light .pill { background:#f8fafc; border-color:#e2e8f0; color:#64748b; }
+    /* DS card — shared surface for all pages */
+    .ds-card {
+      border-radius:var(--hleo-radius); border:1px solid var(--hleo-border);
+      background:var(--hleo-card);
+    }
+    html.light .ds-card { background:#fff; border-color:#e2e8f0; }
+    .ds-btn {
+      display:inline-flex; align-items:center; gap:.4rem;
+      padding:.4rem .85rem; border-radius:.5rem; font-size:.75rem; font-weight:600;
+      transition:all .15s; cursor:pointer; border:1px solid transparent;
+    }
+    .ds-btn-primary { background:var(--hleo-accent); color:#fff; }
+    .ds-btn-primary:hover { background:var(--hleo-accent-dim); }
+    .ds-btn-ghost { background:transparent; color:#8b949e; border-color:var(--hleo-border); }
+    .ds-btn-ghost:hover { color:#e6edf3; background:#1c2128; }
+    /* credential status dot */
+    .cred-dot { width:.5rem; height:.5rem; border-radius:9999px; display:inline-block; }
+    .cred-dot.ok { background:#10b981; }
+    .cred-dot.miss { background:#ef4444; }
   </style>
 </head>
 
@@ -315,6 +366,10 @@
       <button class="nav-tab" data-page="partners">
         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"/></svg>
         <span data-i18n="nav_partners">Partners</span>
+      </button>
+      <button class="nav-tab hidden" data-page="admin" id="adminNavTab">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a6.759 6.759 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.241.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        <span data-i18n="nav_admin">Admin</span>
       </button>
     </div>
 
@@ -678,6 +733,63 @@
   </div>
 </div>
 
+<!-- ──────────────────── ADMIN SOURCES PAGE ──────────────────── -->
+<div id="page-admin" class="page hidden">
+  <div class="mb-6 flex items-start justify-between gap-3">
+    <div>
+      <h1 class="text-xl font-bold dark:text-white text-slate-900 mb-1" data-i18n="admin_title">Source Management</h1>
+      <p class="text-xs dark:text-slate-500 text-slate-400" data-i18n="admin_sub">Runtime data sources — categories, credentials, connectivity.</p>
+    </div>
+    <!-- Logout button (shown only when authenticated) -->
+    <button id="adminLogoutBtn" onclick="adminLogout()" class="hidden ds-btn ds-btn-ghost text-xs flex-shrink-0" data-i18n="admin_logout">Logout</button>
+  </div>
+
+  <!-- Admin disabled notice (shown when /admin/ping returns admin_enabled:false) -->
+  <div id="adminDisabledNotice" class="hidden ds-card p-6 text-center">
+    <svg class="w-8 h-8 mx-auto mb-3 dark:text-slate-600 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+    <p class="text-sm font-medium dark:text-slate-200 text-slate-700 mb-2" data-i18n="admin_disabled_title">Admin section not configured</p>
+    <p class="text-xs dark:text-slate-500 text-slate-400 max-w-md mx-auto" data-i18n="admin_disabled_body">Set HLEO_ADMIN_USERNAME and HLEO_ADMIN_PASSWORD_HASH (bcrypt) environment variables to enable source management.</p>
+  </div>
+
+  <!-- Admin login form (shown when not yet authenticated) -->
+  <div id="adminLoginPanel" class="hidden ds-card p-6 max-w-sm mx-auto mt-4">
+    <div class="text-center mb-4">
+      <svg class="w-8 h-8 mx-auto mb-2 dark:text-slate-400 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+      <h2 class="text-sm font-semibold dark:text-white text-slate-800" data-i18n="admin_login_title">Admin Login</h2>
+      <p class="text-xs dark:text-slate-500 text-slate-400 mt-1" data-i18n="admin_login_sub">Authenticate to manage data sources.</p>
+    </div>
+    <form id="adminLoginForm" onsubmit="adminLogin(event)" class="space-y-3">
+      <div>
+        <label class="block text-xs font-medium dark:text-slate-400 text-slate-500 mb-1" data-i18n="admin_username">Username</label>
+        <input id="adminLoginUser" type="text" autocomplete="username" required
+          class="w-full px-3 py-2 text-sm rounded-lg dark:bg-[#0d1117] dark:border-[#30363d] dark:text-white border border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+      </div>
+      <div>
+        <label class="block text-xs font-medium dark:text-slate-400 text-slate-500 mb-1" data-i18n="admin_password">Password</label>
+        <input id="adminLoginPass" type="password" autocomplete="current-password" required
+          class="w-full px-3 py-2 text-sm rounded-lg dark:bg-[#0d1117] dark:border-[#30363d] dark:text-white border border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+      </div>
+      <div id="adminLoginError" class="hidden text-xs text-red-500 dark:text-red-400 text-center"></div>
+      <button type="submit" id="adminLoginSubmit" class="w-full ds-btn ds-btn-primary text-sm" data-i18n="admin_signin">Sign in</button>
+    </form>
+  </div>
+
+  <!-- Category filter -->
+  <div id="adminCatFilter" class="hidden flex flex-wrap items-center gap-2 mb-5">
+    <span class="text-xs dark:text-slate-500 text-slate-400 font-medium" data-i18n="admin_filter">Category:</span>
+    <button class="filter-btn active" data-admin-cat="all" onclick="adminFilterCat('all')">All</button>
+    <button class="filter-btn" data-admin-cat="scientific" onclick="adminFilterCat('scientific')">Scientific</button>
+    <button class="filter-btn" data-admin-cat="rwe_experience" onclick="adminFilterCat('rwe_experience')">RWE Experience</button>
+    <button class="filter-btn" data-admin-cat="pharmacovigilance" onclick="adminFilterCat('pharmacovigilance')">Pharmacovigilance</button>
+  </div>
+
+  <!-- Sources grid -->
+  <div id="adminSourcesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  <div id="adminEmpty" class="hidden text-center py-12">
+    <p class="dark:text-slate-500 text-slate-400 text-sm" data-i18n="admin_empty">No sources found.</p>
+  </div>
+</div>
+
 </main><!-- /main -->
 
 <!-- ═══════════════════ RWE MODAL ═══════════════════════════════════════════ -->
@@ -860,6 +972,19 @@ const TRANSLATIONS = {
     compare_error:"Comparison failed",
     // ── Partner Management System ──────────────────────────────────────────
     nav_partners:"Partners",
+    nav_admin:"Admin",
+    admin_title:"Source Management",
+    admin_sub:"Runtime data sources — categories, credentials, connectivity.",
+    admin_filter:"Category:",
+    admin_empty:"No sources found.",
+    admin_disabled_title:"Admin section not configured",
+    admin_disabled_body:"Set HLEO_ADMIN_USERNAME and HLEO_ADMIN_PASSWORD_HASH (bcrypt) environment variables to enable source management.",
+    admin_login_title:"Admin Login",
+    admin_login_sub:"Authenticate to manage data sources.",
+    admin_username:"Username",
+    admin_password:"Password",
+    admin_signin:"Sign in",
+    admin_logout:"Logout",
     rwe_nav_orgs:"Community Partners", rwe_nav_sources:"Source Registry",
     rwe_nav_contracts:"Contracts & Licensing", rwe_nav_comparison:"Evidence Comparison",
     partners_title:"Partner Ecosystem",
@@ -1061,6 +1186,19 @@ const TRANSLATIONS = {
     compare_error:"Confronto fallito",
     // ── Sistema di Gestione Partnership ────────────────────────────────────
     nav_partners:"Partner",
+    nav_admin:"Admin",
+    admin_title:"Gestione Fonti",
+    admin_sub:"Fonti dati runtime — categorie, credenziali, connettività.",
+    admin_filter:"Categoria:",
+    admin_empty:"Nessuna fonte trovata.",
+    admin_disabled_title:"Sezione Admin non configurata",
+    admin_disabled_body:"Imposta le variabili d'ambiente HLEO_ADMIN_USERNAME e HLEO_ADMIN_PASSWORD_HASH (bcrypt) per abilitare la gestione delle fonti.",
+    admin_login_title:"Accesso Admin",
+    admin_login_sub:"Autenticati per gestire le fonti dati.",
+    admin_username:"Nome utente",
+    admin_password:"Password",
+    admin_signin:"Accedi",
+    admin_logout:"Esci",
     rwe_nav_orgs:"Partner della Community", rwe_nav_sources:"Registro Fonti",
     rwe_nav_contracts:"Contratti e Licenze", rwe_nav_comparison:"Confronto Evidenze",
     partners_title:"Ecosistema Partner",
@@ -1303,7 +1441,7 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 });
 
 // ─── Page routing ────────────────────────────────────────────────────────────
-const pages = ['search','profiles','experiences','assistant','partners'];
+const pages = ['search','profiles','experiences','assistant','partners','admin'];
 function showPage(name) {
   activePage = name;   // keep global in sync
   pages.forEach(p => {
@@ -1324,6 +1462,7 @@ function showPage(name) {
   if (name === 'experiences') loadExperiences();
   if (name === 'assistant') { loadSessions(); _updateCompareBar(); }
   if (name === 'partners')    loadRwePartners();
+  if (name === 'admin')       loadAdminSources();
 }
 document.querySelectorAll('.nav-tab').forEach(t => t.addEventListener('click', () => showPage(t.dataset.page)));
 
@@ -1832,6 +1971,55 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
   const lbl = document.getElementById('expBtnLabel');
   btn.disabled = true; lbl.textContent = 'Running…';
   document.getElementById('searchBanner').classList.add('hidden');
+
+  // ── RWE mode: extract from the REAL RWE items in the current search context,
+  // NOT a re-collection of Reddit. Uses /rwe/extract-batch.
+  if (searchMode === 'rwe') {
+    const rweItems = (_activeSearchCtx?.rwe_evidence || []);
+    if (!rweItems.length) {
+      showBanner('searchBanner', 'Nessun record RWE disponibile per l\'estrazione. Esegui prima una ricerca RWE.', 'error');
+      btn.disabled = false; lbl.textContent = 'Extract experiences (LLM)';
+      return;
+    }
+    try {
+      const res = await fetch('/rwe/extract-batch', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          query: _activeSearchCtx?.original_query || lastQuery,
+          items: rweItems.map(it => ({
+            source: it.source, source_type: it.source_type,
+            evidence_tier: it.evidence_tier, collection_method: it.collection_method,
+            source_url: it.source_url, external_id: it.external_id,
+            title: it.title, text: it.text, date: it.date,
+            language: it.language, topic: it.topic,
+            treatment: it.treatment, condition: it.condition,
+            experience_type: it.experience_type,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      const n = data.experiences_extracted || data.profiles_created || 0;
+      const found = data.rwe_records_found || 0;
+      const skipped = data.skipped || 0;
+      const errors = data.errors || 0;
+      let msg = `\u2705 Estratte <strong>${n}</strong> esperienze da <strong>${found}</strong> record RWE`;
+      if (skipped) msg += `, ${skipped} già esistenti`;
+      if (errors) msg += `, ${errors} errori`;
+      msg += `. <button onclick="showPage('profiles')" class="underline ml-1">Vedi profili</button>`;
+      showBanner('searchBanner', msg, 'success');
+      _profilesDirty = true;
+      refreshNavCounts();
+    } catch(err) {
+      showBanner('searchBanner', `Error: ${esc(err.message)}`);
+    } finally {
+      btn.disabled = false; lbl.textContent = 'Extract experiences (LLM)';
+    }
+    return;
+  }
+
+  // ── Scientific/Global mode: legacy Reddit-only ingestion
   try {
     const res  = await fetch(`/experiences/ingest?q=${encodeURIComponent(lastQuery)}`, {method:'POST'});
     if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -3312,17 +3500,282 @@ async function _submitComparison() {
   } catch(e) { alert('Error: ' + e.message); }
 }
 
+// ═══════════════════ ADMIN SOURCES PAGE ═════════════════════════════════════
+let _adminSources = [];
+let _adminCat = 'all';
+
+const _CAT_LABELS = {
+  scientific: 'Scientific', rwe_experience: 'RWE Experience',
+  pharmacovigilance: 'Pharmacovigilance', other: 'Other',
+};
+const _CAT_CLASS = { scientific:'scientific', rwe_experience:'rwe', pharmacovigilance:'pharmacovigilance', other:'other' };
+
+// ── Admin auth token management ─────────────────────────────────────────────
+// The token is a stateless HMAC-signed string issued by POST /admin/login.
+// Stored in sessionStorage (cleared when the browser tab closes) — NEVER in
+// localStorage or a cookie. No credentials are hardcoded in the client.
+const _ADMIN_TOKEN_KEY = 'hleo_admin_token';
+
+function _getAdminToken() {
+  try { return sessionStorage.getItem(_ADMIN_TOKEN_KEY) || null; } catch { return null; }
+}
+function _setAdminToken(token) {
+  try { sessionStorage.setItem(_ADMIN_TOKEN_KEY, token); } catch {}
+}
+function _clearAdminToken() {
+  try { sessionStorage.removeItem(_ADMIN_TOKEN_KEY); } catch {}
+}
+
+// Build the Authorization header for admin fetches (or null if not authed).
+function _adminAuthHeader() {
+  const token = _getAdminToken();
+  return token ? { 'Authorization': 'Bearer ' + token } : null;
+}
+
+async function checkAdminAvailability() {
+  // Public probe: /admin/ping returns {admin_enabled: bool} WITHOUT requiring
+  // authentication. The frontend only learns WHETHER the admin section exists.
+  try {
+    const r = await fetch('/admin/ping');
+    if (!r.ok) {
+      document.getElementById('adminNavTab')?.classList.add('hidden');
+      return 'disabled';
+    }
+    const d = await r.json();
+    if (!d.admin_enabled) {
+      document.getElementById('adminNavTab')?.classList.add('hidden');
+      return 'disabled';
+    }
+    document.getElementById('adminNavTab')?.classList.remove('hidden');
+    return 'enabled';
+  } catch {
+    document.getElementById('adminNavTab')?.classList.add('hidden');
+    return 'disabled';
+  }
+}
+
+let _adminAvail = null;  // cached result of checkAdminAvailability
+
+function _showAdminLoginPanel(show) {
+  const panel = document.getElementById('adminLoginPanel');
+  if (!panel) return;
+  panel.classList.toggle('hidden', !show);
+  if (show) {
+    document.getElementById('adminCatFilter')?.classList.add('hidden');
+    document.getElementById('adminSourcesGrid').innerHTML = '';
+    document.getElementById('adminEmpty')?.classList.add('hidden');
+    document.getElementById('adminLoginError')?.classList.add('hidden');
+    setTimeout(() => document.getElementById('adminLoginUser')?.focus(), 50);
+  }
+}
+
+async function adminLogin(ev) {
+  // Login form submit handler — POSTs credentials to /admin/login and stores
+  // the returned Bearer token in sessionStorage. No credentials are persisted.
+  if (ev) ev.preventDefault();
+  const user = document.getElementById('adminLoginUser')?.value || '';
+  const pass = document.getElementById('adminLoginPass')?.value || '';
+  const errEl = document.getElementById('adminLoginError');
+  const btn = document.getElementById('adminLoginSubmit');
+  if (!user || !pass) return;
+  if (btn) btn.disabled = true;
+  if (errEl) { errEl.classList.add('hidden'); }
+  try {
+    const r = await fetch('/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (r.status === 401) {
+      if (errEl) { errEl.textContent = 'Invalid credentials.'; errEl.classList.remove('hidden'); }
+      return;
+    }
+    if (r.status === 404) {
+      // Admin disabled mid-session.
+      _adminAvail = 'disabled';
+      loadAdminSources();
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.token) throw new Error('No token in response.');
+    _setAdminToken(d.token);
+    // Clear the password field immediately — never retained in the DOM.
+    const passField = document.getElementById('adminLoginPass');
+    if (passField) passField.value = '';
+    _showAdminLoginPanel(false);
+    document.getElementById('adminLogoutBtn')?.classList.remove('hidden');
+    await loadAdminSources();
+  } catch (e) {
+    if (errEl) { errEl.textContent = 'Login failed: ' + esc(e.message); errEl.classList.remove('hidden'); }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function adminLogout() {
+  // Client-side logout: discard the token. The token is stateless (HMAC-signed),
+  // so server-side revocation is not possible — clearing sessionStorage is the
+  // real logout. We best-effort notify the server (with the token still in hand)
+  // for API symmetry, but ignore any error.
+  const hdr = _adminAuthHeader() || {};
+  _clearAdminToken();
+  document.getElementById('adminLogoutBtn')?.classList.add('hidden');
+  _adminSources = [];
+  _showAdminLoginPanel(true);
+  fetch('/admin/logout', { method: 'POST', headers: hdr }).catch(() => {});
+}
+
+async function loadAdminSources() {
+  const grid = document.getElementById('adminSourcesGrid');
+  const empty = document.getElementById('adminEmpty');
+  const disabled = document.getElementById('adminDisabledNotice');
+  const catFilter = document.getElementById('adminCatFilter');
+  const loginPanel = document.getElementById('adminLoginPanel');
+  const logoutBtn = document.getElementById('adminLogoutBtn');
+  if (!grid) return;
+
+  if (_adminAvail === null) _adminAvail = await checkAdminAvailability();
+
+  // Admin disabled → show the disabled notice, hide everything else.
+  if (_adminAvail === 'disabled') {
+    disabled.classList.remove('hidden');
+    catFilter.classList.add('hidden'); grid.innerHTML = '';
+    empty.classList.add('hidden'); loginPanel.classList.add('hidden');
+    logoutBtn?.classList.add('hidden');
+    return;
+  }
+
+  disabled.classList.add('hidden');
+  const token = _getAdminToken();
+  if (!token) {
+    // Not authenticated → show the login form.
+    _showAdminLoginPanel(true);
+    logoutBtn?.classList.add('hidden');
+    return;
+  }
+
+  // Authenticated → fetch sources with the Bearer token.
+  loginPanel.classList.add('hidden');
+  logoutBtn?.classList.remove('hidden');
+  catFilter.classList.add('hidden'); grid.innerHTML = '';
+  try {
+    const r = await fetch('/admin/sources', { headers: _adminAuthHeader() });
+    if (r.status === 401) {
+      // Token expired or invalid → clear and show login form.
+      _clearAdminToken();
+      logoutBtn?.classList.add('hidden');
+      _showAdminLoginPanel(true);
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    _adminSources = d.sources || [];
+    catFilter.classList.remove('hidden');
+    renderAdminSources();
+  } catch (e) {
+    grid.innerHTML = `<div class="col-span-full text-center text-xs dark:text-red-400 text-red-500 py-8">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function adminFilterCat(cat) {
+  _adminCat = cat;
+  document.querySelectorAll('[data-admin-cat]').forEach(b => {
+    b.classList.toggle('active', b.dataset.adminCat === cat);
+  });
+  renderAdminSources();
+}
+
+function renderAdminSources() {
+  const grid = document.getElementById('adminSourcesGrid');
+  const empty = document.getElementById('adminEmpty');
+  const list = _adminCat === 'all' ? _adminSources : _adminSources.filter(s => s.category === _adminCat);
+  if (!list.length) { grid.innerHTML=''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+  grid.innerHTML = list.map(s => {
+    const cat = s.category || 'other';
+    const catBadge = `<span class="cat-badge ${_CAT_CLASS[cat]||'other'}">${esc(_CAT_LABELS[cat]||cat)}</span>`;
+    let credBlock = '';
+    if (s.requires_credentials && s.credentials) {
+      const ok = s.credentials.configured;
+      const dot = ok ? 'ok' : 'miss';
+      const missingTxt = s.credentials.missing && s.credentials.missing.length
+        ? ` — missing: ${esc(s.credentials.missing.join(', '))}` : '';
+      credBlock = `<div class="flex items-center gap-1.5 text-xs mt-1">
+        <span class="cred-dot ${dot}"></span>
+        <span class="dark:text-slate-400 text-slate-500">${ok?'Credentials configured':'Credentials not configured'}${missingTxt}</span>
+      </div>`;
+    } else if (!s.requires_credentials) {
+      credBlock = `<div class="flex items-center gap-1.5 text-xs mt-1">
+        <span class="cred-dot ok"></span>
+        <span class="dark:text-slate-500 text-slate-400">No credentials required</span>
+      </div>`;
+    }
+    const statusPill = s.status
+      ? `<span class="pill">${esc(s.status)}</span>` : '';
+    const evPill = s.evidence_level
+      ? `<span class="pill">${esc(s.evidence_level)}</span>` : '';
+    return `<div class="ds-card p-4 result-card">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-sm font-semibold dark:text-white text-slate-800 truncate">${esc(s.name)}</span>
+            ${catBadge}
+          </div>
+          <div class="text-xs dark:text-slate-500 text-slate-400">${esc(s.source_id)} · ${esc(s.integration_type||'')}</div>
+        </div>
+      </div>
+      ${s.description ? `<p class="text-xs dark:text-slate-400 text-slate-500 mb-2 line-clamp-2">${esc(s.description)}</p>` : ''}
+      <div class="flex flex-wrap gap-1.5 mb-2">${statusPill}${evPill}${(s.language_codes||[]).map(c=>`<span class="pill">${esc(c)}</span>`).join('')}</div>
+      ${credBlock}
+      <div class="flex items-center justify-between gap-2 mt-3 pt-3 border-t dark:border-surface-border border-slate-200">
+        <span class="text-xs dark:text-slate-600 text-slate-400">${s.last_sync_at ? 'Synced '+new Date(s.last_sync_at).toLocaleDateString() : 'Never synced'}</span>
+        <button onclick="testAdminSource('${esc(s.source_id)}')" class="ds-btn ds-btn-ghost text-xs">
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5"/></svg>
+          Test
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function testAdminSource(sourceId) {
+  try {
+    const r = await fetch(`/admin/sources/${encodeURIComponent(sourceId)}/test`, {
+      method: 'POST',
+      headers: _adminAuthHeader() || {},
+    });
+    if (r.status === 401) {
+      _clearAdminToken();
+      _showAdminLoginPanel(true);
+      document.getElementById('adminLogoutBtn')?.classList.add('hidden');
+      return;
+    }
+    const d = await r.json();
+    const ok = d.reachable;
+    const msg = ok
+      ? `✓ ${esc(d.name)}: reachable (${d.items_returned} item(s))`
+      : `✗ ${esc(d.name)}: ${esc(d.error||'unreachable')}`;
+    showBanner('searchBanner', msg, ok ? 'success' : 'error');
+  } catch(e) { alert('Test failed: '+e.message); }
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 applyTranslations();   // apply saved language preference on page load
 refreshNavCounts();
-if (currentSessionId) {
-  // pre-load session silently — user can switch to assistant tab
-}
-const urlQ = new URLSearchParams(location.search).get('q');
-if (urlQ) {
-  document.getElementById('searchInput').value = urlQ;
-  document.getElementById('searchForm').dispatchEvent(new Event('submit'));
-}
+(async () => {
+  _adminAvail = await checkAdminAvailability();  // cache + show/hide admin nav tab
+  const _urlParams = new URLSearchParams(location.search);
+  const _pageParam = _urlParams.get('page');
+  const urlQ = _urlParams.get('q');
+  if (urlQ) {
+    document.getElementById('searchInput').value = urlQ;
+    document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+  } else if (_pageParam === 'admin' && _adminAvail !== 'disabled') {
+    showPage('admin');
+    history.replaceState(null, '', location.pathname);
+  }
+})();
 </script>
 </body>
 </html>
