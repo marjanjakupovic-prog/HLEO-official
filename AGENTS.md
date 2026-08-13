@@ -170,26 +170,77 @@ extraction + AI Clinical Assistant (RAG). Python 3.13.
   schema, canonical Italian query full pipeline). Full suite: 60 passed.
 
 
-## Dependencies (2026-08-12 audit)
+## Dependencies (2026-08-12 audit, refreshed 2026-08-10)
 All deps in requirements.txt are at latest published versions and used in
 code. Verified pip index versions for each: fastapi 0.141.1, uvicorn 0.52.1,
-sqlalchemy 2.0.52, psycopg2-binary 2.9.12, pydantic 2.13.4, openai 3.0.0,
-python-dotenv 1.2.2, pytest 9.1.1, jinja2 3.1.6, requests 2.34.2,
-beautifulsoup4 4.15.0, praw 8.0.2, ddgs 9.14.4, httpx2 2.10.0.
+sqlalchemy 2.0.52, psycopg2-binary 2.9.12, pydantic 2.13.4, bcrypt 5.0.0,
+openai 3.0.0, python-dotenv 1.2.2, pytest 9.1.1, jinja2 3.1.6, requests 2.34.2,
+beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
 
-- openai 2.54.0 -> 3.0.0: only dep with an update available. v3.0.0 makes
-  HTTPX2 the default HTTP client (httpx no longer auto-installed). Codebase
-  already pins httpx2==2.10.0 and uses only from openai import OpenAI +
-  client.chat.completions.create(**kwargs) (unchanged API), so the upgrade
-  was a drop-in. All 165 tests pass + real LLM calls verified via
-  /assistant/compare and /synthesis/card.
+- 2026-08-10 refresh: bcrypt 4.2.0 → 5.0.0 (major; API unchanged —
+  hashpw/checkpw/gensalt all backward compatible, verified with admin Basic
+  Auth flow end-to-end); praw 8.0.2 → 8.0.3 (patch). All 165 tests pass,
+  pip-audit clean. install_hleo.py embedded requirements synced too.
+- openai 2.54.0 -> 3.0.0: v3.0.0 makes HTTPX2 the default HTTP client (httpx
+  no longer auto-installed). Codebase pins httpx2==2.10.0 and uses only
+  `from openai import OpenAI` + `client.chat.completions.create(**kwargs)`
+  (unchanged API), so the upgrade was a drop-in.
 - No unused deps to prune: every requirements.txt entry is used directly
-  (fastapi, sqlalchemy, pydantic, openai, dotenv, pytest, requests, bs4, ddgs)
-  or at runtime/CLI (uvicorn server, jinja2 via FastAPI Jinja2Templates,
-  psycopg2 via SQLAlchemy driver string, httpx2 as openai transport, praw
-  lazy-imported in collectors/reddit.py).
+  (fastapi, sqlalchemy, pydantic, bcrypt, openai, dotenv, requests, bs4, ddgs,
+  praw) or at runtime/CLI (uvicorn server, jinja2 via FastAPI Jinja2Templates,
+  psycopg2 via SQLAlchemy driver string, httpx2 as openai transport,
+  pytest for the test suite).
 - Orphaned legacy code (NOT removed): app.py + ui/ (PySide6 Qt desktop
   UI) is from the initial commit, unused by tests/Dockerfile/run_pipeline, and
   depends on PySide6 which is NOT in requirements.txt and NOT installed. It is
   superseded by the FastAPI web app (api/main.py + templates/index.html).
   Left in place; flagged for user decision on whether to delete.
+
+## Admin authentication — token-based login (2026-08-10)
+- **Architecture**: HTTP Basic Auth (bcrypt-hashed password from env) is still
+  supported for backward compatibility (API clients, curl), AND a stateless
+  Bearer-token login flow was added for the web UI. No sessions, no users table,
+  no hardcoded secrets. The admin identity is read from environment variables:
+  - `HLEO_ADMIN_USERNAME` (default: none → admin disabled)
+  - `HLEO_ADMIN_PASSWORD_HASH` (bcrypt hash; plaintext NEVER stored)
+  - `HLEO_ADMIN_TOKEN_TTL` (optional, seconds; default 28800 = 8h)
+- **Login flow (frontend → backend)**:
+  1. `GET /admin/ping` (public, no auth) → `{admin_enabled: bool}`. Frontend
+     uses this to show/hide the Admin nav tab.
+  2. User clicks Admin tab → `loadAdminSources()` checks sessionStorage for a
+     token. If none, shows the login form (username + password inputs).
+  3. `POST /admin/login` `{username, password}` → validates against the same
+     bcrypt hash, returns `{token, expires_at, username}`. 401 on wrong creds.
+  4. Frontend stores the token in `sessionStorage` (cleared when tab closes;
+     NEVER localStorage or cookies). All subsequent `/admin/*` fetches include
+     `Authorization: Bearer <token>`.
+  5. `POST /admin/logout` (requires valid token) → no-op server-side (stateless
+     token), client clears sessionStorage.
+- **Token**: HMAC-SHA256 signed payload `{u: username, exp: expiry}`. The HMAC
+  key is the bcrypt password hash itself (server-side only, never exposed to
+  clients). Changing the admin password invalidates all outstanding tokens.
+  Tampered/expired tokens → 401.
+- **`require_admin`** dependency accepts EITHER Bearer token (web UI) OR Basic
+  Auth (backward compat). If admin not configured → 404 (section hidden). If no
+  valid creds → 401 with `WWW-Authenticate`.
+- **Security**: no credentials hardcoded in client code (verified by test).
+  Password field cleared immediately after login. Token does not contain the
+  password or hash (verified by test). Token in sessionStorage (not persisted to
+  disk). In production, deploy behind HTTPS.
+- **Files**: `core/admin_auth.py` (token create/verify, require_admin),
+  `api/admin.py` (`/admin/login`, `/admin/logout`, source CRUD routes),
+  `templates/index.html` (login form, token management JS).
+- **Tests**: `tests/test_admin_auth.py` (24 tests covering all required
+  scenarios: unauthenticated 401, wrong creds 401, correct creds 200 + token,
+  bearer-token auth 200, admin tab visibility, no hardcoded creds, Basic Auth
+  backward compat, tampered/expired token 401).
+
+## Admin tab (frontend) — fixed 2026-08-10
+- **Bug**: Admin nav tab appeared but clicking it showed the search page
+  (page-admin never became visible). Root cause: the admin page `<div>` had
+  `id="adminPage"` while `showPage(name)` toggles `hidden` on
+  `document.getElementById(\`page-${name}\`)`. All other pages use the
+  `page-<name>` convention. Fixed by renaming `id="adminPage"` →
+  `id="page-admin"` in templates/index.html.
+- Admin enabled via env `HLEO_ADMIN_USERNAME` + `HLEO_ADMIN_PASSWORD_HASH`
+  (bcrypt; generate with `python -c "from core.admin_auth import hash_password; print(hash_password('your-password'))" `).
