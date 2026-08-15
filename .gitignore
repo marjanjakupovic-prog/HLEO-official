@@ -5,3 +5,8 @@ __pycache__/
 
 # Local test sqlite DB
 test_hleo.db
+# Local temporary test DBs and agent audit artifacts
+test_hleo_*.db
+.agent_*.json
+
+
