@@ -470,6 +470,8 @@
     <div class="skeleton rounded-xl h-24"></div>
   </div>
   <div id="searchResults" class="space-y-3"></div>
+  <div id="searchResultsGlobal" class="hidden space-y-3"></div>
+  <div id="searchResultsRwe" class="hidden space-y-3"></div>
   <div id="searchEmpty" class="hidden text-center py-20 dark:text-slate-500 text-slate-400 text-sm" data-i18n="search_no_results">No results found.</div>
 </div><!-- /page-search -->
 
@@ -1506,6 +1508,14 @@ let activePage       = 'search';   // tracks the currently visible tab (global, 
 let _searchInProgress = false;      // true only while a /search fetch is in-flight
 let _profilesDirty    = true;       // true = profiles must be (re)fetched on next navigation to Profiles
 
+// Per-mode isolated search state (snapshot & restore on mode change)
+let _searchStates = {
+  scientific: { lastQuery: '', activeSearchCtx: null, currentSearchEpisodeIds: null, inProgress: false, profilesDirty: true },
+  global:     { lastQuery: '', activeSearchCtx: null, currentSearchEpisodeIds: null, inProgress: false, profilesDirty: true },
+  rwe:        { lastQuery: '', activeSearchCtx: null, currentSearchEpisodeIds: null, inProgress: false, profilesDirty: true },
+};
+
+
 function normResults(data) {
   const out = [];
   (data.pubmed||[]).forEach(a => out.push({type:'pubmed', data:a}));
@@ -1594,12 +1604,19 @@ function buildSearchCard(item) {
 }
 
 function renderSearch() {
-  const container = document.getElementById('searchResults');
+  const containerId = searchMode === 'rwe' ? 'searchResultsRwe' : (searchMode === 'global' ? 'searchResultsGlobal' : 'searchResults');
+  const container = document.getElementById(containerId);
   const empty     = document.getElementById('searchEmpty');
+  // hide other containers
+  ['searchResults','searchResultsGlobal','searchResultsRwe'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (id === containerId) el.classList.remove('hidden'); else el.classList.add('hidden');
+  });
   const filtered  = activeFilter==='all' ? allSearchResults : allSearchResults.filter(r=>r.type===activeFilter);
-  if (!filtered.length) { container.innerHTML=''; empty.classList.remove('hidden'); return; }
+  if (!filtered.length) { if (container) container.innerHTML=''; empty.classList.remove('hidden'); return; }
   empty.classList.add('hidden');
-  container.innerHTML = filtered.map(buildSearchCard).join('');
+  if (container) container.innerHTML = filtered.map(buildSearchCard).join('');
 }
 
 document.querySelectorAll('.filter-btn').forEach(btn =>
@@ -1620,7 +1637,7 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
   document.querySelectorAll('.filter-btn').forEach(b=>b.classList.toggle('active', b.dataset.source==='all'));
   document.getElementById('searchBanner').classList.add('hidden');
   document.getElementById('searchEmpty').classList.add('hidden');
-  document.getElementById('searchResults').innerHTML = '';
+  ['searchResults','searchResultsGlobal','searchResultsRwe'].forEach(id => { const el = document.getElementById(id); if (el) { el.innerHTML = ''; el.classList.add('hidden'); } });
   document.getElementById('skeleton').classList.remove('hidden');
   document.getElementById('searchActionBar').classList.add('hidden');
   // Mark profiles as needing a new pipeline run — clear the episode_id scope
@@ -1837,7 +1854,39 @@ document.getElementById('runPipelineBtn').addEventListener('click', async () => 
 
 // ── Search mode selector (Global / Scientific / RWE) ─────────────────────────
 function setSearchMode(mode) {
+  // Snapshot current mode state
+  try {
+    if (_searchStates && _searchStates[searchMode]) {
+      _searchStates[searchMode].lastQuery = lastQuery;
+      _searchStates[searchMode].activeSearchCtx = _activeSearchCtx;
+      _searchStates[searchMode].currentSearchEpisodeIds = _currentSearchEpisodeIds;
+      _searchStates[searchMode].inProgress = _searchInProgress;
+      _searchStates[searchMode].profilesDirty = _profilesDirty;
+        _searchStates[searchMode].allSearchResults = allSearchResults;
+        _searchStates[searchMode].activeFilter = activeFilter;
+
+    }
+  } catch (e) { /* ignore snapshot errors */ }
+
   searchMode = mode;
+
+  // Restore state for the new mode
+  try {
+    if (_searchStates && _searchStates[mode]) {
+      lastQuery = _searchStates[mode].lastQuery || '';
+      _activeSearchCtx = _searchStates[mode].activeSearchCtx || null;
+      _searchStates[mode].allSearchResults = _searchStates[mode].allSearchResults || [];
+      allSearchResults = _searchStates[mode].allSearchResults;
+      activeFilter = _searchStates[mode].activeFilter || 'all';
+
+      try { document.querySelectorAll('.filter-btn').forEach(b=>b.classList.toggle('active', b.dataset.source === activeFilter)); } catch(e) {}
+
+      _currentSearchEpisodeIds = _searchStates[mode].currentSearchEpisodeIds || null;
+      _searchInProgress = !!_searchStates[mode].inProgress;
+      _profilesDirty = _searchStates[mode].profilesDirty !== undefined ? _searchStates[mode].profilesDirty : _profilesDirty;
+    }
+  } catch (e) { /* ignore restore errors */ }
+
   document.querySelectorAll('.search-mode-tab').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
   // Synthesis + Pipeline buttons are only available in scientific/global modes
@@ -1857,6 +1906,9 @@ function setSearchMode(mode) {
   };
   const key = keyMap[mode] || 'search_hero_subtitle_sci';
   if (sub) { sub.dataset.i18n = key; sub.textContent = t(key); }
+  // Restore visible search input value for the new mode
+  try { const si = document.getElementById('searchInput'); if (si) si.value = lastQuery || ''; } catch(e) {}
+  try { renderSearch(); } catch(e) {}
 }
 
 // ── Level 3: Scientific Synthesis ────────────────────────────────────────────
@@ -1894,6 +1946,8 @@ document.getElementById('runSynthesisBtn').addEventListener('click', async () =>
     if (data.error) { content.innerHTML = `<p class="text-sm text-amber-500">⚠️ ${esc(data.error)}</p>`; return; }
     renderSynthesis(data, relevant);
   } catch(err) {
+  try { renderSearch(); } catch(e) {}
+
     content.innerHTML = `<p class="text-sm text-red-500">${esc(t('synthesis_error'))}: ${esc(err.message)}</p>`;
   } finally {
     btn.disabled = false; lbl.textContent = t('search_btn_synthesis');
