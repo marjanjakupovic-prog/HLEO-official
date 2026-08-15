@@ -4236,6 +4236,95 @@ applyTranslations();   // apply saved language preference on page load
 refreshNavCounts();
 (async () => {
   _adminAvail = await checkAdminAvailability();  // cache + show/hide admin nav tab
+
+async function loadDashboard() {
+  try {
+    // parallel fetch stats, sources, partners, recent profiles
+    const [statsRes, sourcesRes, partnersRes, recentProfileRes, recentRweRes, healthRes] = await Promise.all([
+      fetch('/stats'),
+      fetch('/rwe/sources'),
+      fetch('/rwe/partners'),
+      fetch('/profiles?limit=1'),
+      fetch('/rwe/profiles?limit=1'),
+      fetch('/health'),
+    ]);
+
+    // stats
+    if (statsRes.ok) {
+      const s = await statsRes.json();
+      const cp = document.getElementById('dashClinicalProfiles');
+      const rp = document.getElementById('dashRweProfiles');
+      const pe = document.getElementById('dashPatientExperiences');
+      const sc = document.getElementById('dashSourcesCount');
+      if (cp) cp.textContent = (s.clinical_profiles ?? 0).toString();
+      if (rp) rp.textContent = (s.rwe_profiles ?? 0).toString();
+      if (pe) pe.textContent = (s.patient_experiences ?? 0).toString();
+      if (sc) sc.textContent = (s.raw_sources ?? 0).toString();
+    }
+
+    // rwe sources
+    if (sourcesRes && sourcesRes.ok) {
+      const srcs = await sourcesRes.json();
+      const el = document.getElementById('dashSourcesPreviewCount');
+      const sc = document.getElementById('sourcesCountChip');
+      const count = Array.isArray(srcs) ? srcs.length : (srcs.count || 0);
+      if (el) el.textContent = `${count} sources`;
+      if (sc) sc.textContent = `${count} sources`;
+      // render quick preview small grid if needed
+      const rweSourceGrid = document.getElementById('rweSourceGrid');
+      if (rweSourceGrid && Array.isArray(srcs)) {
+        rweSourceGrid.innerHTML = srcs.slice(0,6).map(s=> buildSourceCard(s)).join('');
+      }
+    }
+
+    // partners
+    if (partnersRes && partnersRes.ok) {
+      const pts = await partnersRes.json();
+      const el = document.getElementById('dashPartnersCount');
+      const count = Array.isArray(pts) ? pts.length : (pts.count || 0);
+      if (el) el.textContent = `${count} partners`;
+    }
+
+    // recent scientific profile
+    if (recentProfileRes && recentProfileRes.ok) {
+      const d = await recentProfileRes.json();
+      const p = (d.profiles || [])[0];
+      const t = document.getElementById('dashRecentClinicalTitle');
+      const m = document.getElementById('dashRecentClinicalMeta');
+      if (p) {
+        if (t) t.textContent = p.title || p.episode_id || 'Clinical profile';
+        if (m) m.textContent = `${p.source || ''} · ${p.pub_year || ''}`.trim();
+      }
+    }
+
+    // recent rwe profile
+    if (recentRweRes && recentRweRes.ok) {
+      const d = await recentRweRes.json();
+      const p = (d.profiles || [])[0];
+      const t = document.getElementById('dashRecentRweTitle');
+      const m = document.getElementById('dashRecentRweMeta');
+      if (p) {
+        if (t) t.textContent = p.title || p.episode_id || 'RWE profile';
+        if (m) m.textContent = `${p.source || ''} · ${p.language || ''}`.trim();
+      }
+    }
+
+    // health
+    if (healthRes && healthRes.ok) {
+      const h = await healthRes.json();
+      const sys = document.getElementById('sidebarSystemState');
+      if (sys) sys.textContent = h.status || 'ok';
+    }
+
+  } catch (err) {
+    // silent — dashboard non-blocking
+    console.warn('loadDashboard failed', err);
+  }
+}
+
+// call once at init to populate dashboard metrics
+try { loadDashboard(); } catch(e) { /* ignore init errors */ }
+
   const _urlParams = new URLSearchParams(location.search);
   const _pageParam = _urlParams.get('page');
   const urlQ = _urlParams.get('q');
