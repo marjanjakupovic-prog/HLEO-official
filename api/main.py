@@ -197,6 +197,9 @@ def stats(db: Session = Depends(get_db)):
         "patient_experiences": db.execute(
             select(func.count()).select_from(PatientExperience)
         ).scalar(),
+        "rwe_profiles": db.execute(
+            select(func.count()).select_from(RWEProfile)
+        ).scalar(),
         "raw_sources": db.execute(
             select(func.count()).select_from(RawSource)
         ).scalar(),

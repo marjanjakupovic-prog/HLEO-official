@@ -624,6 +624,8 @@
     <div id="rweHeaderActions"></div>
   </div>
 
+    <div id="rweFeedbackBanner" class="hidden mb-4"></div>
+
   <!-- Stats strip (populated by JS) -->
   <div id="rweStats" class="hidden mb-5 grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
 
@@ -906,8 +908,8 @@ const TRANSLATIONS = {
     card_dev_mode:"Developer mode",
     card_dev_mode_desc:"Raw extracted JSON \u2014 for debugging and integration use only.",
     card_open_source:"Open source",
-    experiences_title:"Patient Experiences",
-    experiences_subtitle:"Structured insights from patient-reported posts",
+    experiences_title:"Patient & RWE Experiences",
+    experiences_subtitle:"Structured insights from patient reports and extracted RWE profiles",
     exp_badge_label:"Patient Experience",
     exp_confidence:"confidence",
     exp_field_condition:"Condition", exp_field_duration:"Duration",
@@ -916,8 +918,8 @@ const TRANSLATIONS = {
     exp_field_emotional:"Emotional impact", exp_field_age_sex:"Age / Sex",
     exp_field_unmet_needs:"Unmet needs",
     exp_reddit_source:"Reddit source \u2197",
-    exp_empty_default_title:"No patient experiences yet",
-    exp_empty_default_body:"Search for a topic, then click <strong>Extract experiences (LLM)</strong> to collect and analyse Reddit posts.",
+    exp_empty_default_title:"No experiences yet",
+    exp_empty_default_body:"Search for a topic, then click <strong>Extract experiences (LLM)</strong> to collect Reddit posts and extracted RWE profiles.",
     exp_empty_setup_title:"Setup steps to connect Reddit:",
     exp_empty_no_creds_title:"Reddit not connected",
     exp_empty_no_creds_body:"Add <strong>REDDIT_CLIENT_ID</strong> and <strong>REDDIT_CLIENT_SECRET</strong> as Replit Secrets (Settings \u2192 Secrets). Register a free Reddit script app at <a href=\"https://www.reddit.com/prefs/apps\" target=\"_blank\" class=\"underline\">reddit.com/prefs/apps</a> \u2014 takes about 60 seconds.",
@@ -1120,8 +1122,8 @@ const TRANSLATIONS = {
     card_dev_mode:"Modalit\u00e0 sviluppatore",
     card_dev_mode_desc:"JSON estratto grezzo \u2014 solo per debug e integrazione.",
     card_open_source:"Apri fonte",
-    experiences_title:"Esperienze dei Pazienti",
-    experiences_subtitle:"Sintesi strutturate da post di pazienti",
+    experiences_title:"Esperienze Pazienti & RWE",
+    experiences_subtitle:"Sintesi strutturate da post di pazienti e profili RWE estratti",
     exp_badge_label:"Esperienza del Paziente",
     exp_confidence:"affidabilit\u00e0",
     exp_field_condition:"Condizione", exp_field_duration:"Durata",
@@ -1131,7 +1133,7 @@ const TRANSLATIONS = {
     exp_field_unmet_needs:"Bisogni insoddisfatti",
     exp_reddit_source:"Fonte Reddit \u2197",
     exp_empty_default_title:"Nessuna esperienza ancora",
-    exp_empty_default_body:"Cerca un argomento, poi clicca su <strong>Estrai esperienze (LLM)</strong> per raccogliere e analizzare i post da Reddit.",
+    exp_empty_default_body:"Cerca un argomento, poi clicca su <strong>Estrai esperienze (LLM)</strong> per raccogliere i post da Reddit e i profili RWE estratti.",
     exp_empty_setup_title:"Passaggi per connettere Reddit:",
     exp_empty_no_creds_title:"Reddit non connesso",
     exp_empty_no_creds_body:"Aggiungi <strong>REDDIT_CLIENT_ID</strong> e <strong>REDDIT_CLIENT_SECRET</strong> come Segreti Replit (Impostazioni \u2192 Segreti). Registra un app Reddit gratuita su <a href=\"https://www.reddit.com/prefs/apps\" target=\"_blank\" class=\"underline\">reddit.com/prefs/apps</a>.",
@@ -2007,9 +2009,9 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
       let msg = `\u2705 Estratte <strong>${n}</strong> esperienze da <strong>${found}</strong> record RWE`;
       if (skipped) msg += `, ${skipped} già esistenti`;
       if (errors) msg += `, ${errors} errori`;
-      msg += `. <button onclick="showPage('profiles')" class="underline ml-1">Vedi profili</button>`;
+      msg += `. <button onclick="showPage('experiences')" class="underline ml-1">Vedi esperienze RWE</button>`;
       showBanner('searchBanner', msg, 'success');
-      _profilesDirty = true;
+      if (activePage === 'experiences') loadExperiences();
       refreshNavCounts();
     } catch(err) {
       showBanner('searchBanner', `Error: ${esc(err.message)}`);
@@ -2385,6 +2387,61 @@ function buildExperienceCard(exp) {
     </div>
     <div class="hidden"></div>
   </article>`;
+
+function buildRweProfileCard(exp) {
+  const p = exp.extracted_profile || {};
+  const condition = p.condition || 'Unknown condition';
+  const title = exp.title || exp.episode_id || 'RWE profile';
+  const summary = p.experience_summary || '';
+  const quotes = (p.key_quotes || []).slice(0, 2);
+  const treatment = p.treatment || '';
+  const outcome = p.outcome || '';
+  const adverseEvents = (p.adverse_events || []).slice(0, 3).join(', ');
+  const demo = p.demographics || {};
+  const demographics = [demo.age ? `Age ${demo.age}` : '', demo.sex || '', demo.country || ''].filter(Boolean).join(', ');
+  const conf = p.extraction_confidence;
+  const confColor = conf === 'high' ? 'text-emerald-400' : conf === 'low' ? 'text-red-400' : 'text-yellow-400';
+  const date = exp.ingested_at ? new Date(exp.ingested_at).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }) : '';
+  const fields = [
+    [t('exp_field_condition'), condition],
+    [t('exp_field_treatments'), treatment],
+    [t('exp_field_outcomes'), outcome],
+    [t('exp_field_side_effects'), adverseEvents],
+    [t('exp_field_age_sex'), demographics],
+    ['Source', [exp.source, exp.source_type].filter(Boolean).join(' · ')],
+  ].filter(([, v]) => v);
+
+  const _expText = `${summary}\n\n${quotes.join('\n')}`.trim();
+  const _ecid = _regCard(_expText || title || exp.episode_id || '', 'rwe_profile');
+
+  return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-5 animate-slide-up">
+    <div class="flex items-start gap-2 mb-2.5 flex-wrap">
+      ${badge('amber', 'RWE')}
+      ${exp.is_testimonial ? `<span class="text-xs font-medium text-emerald-400">Testimonial</span>` : ''}
+      ${conf ? `<span class="text-xs font-medium ${confColor}">${esc(conf)} ${t('exp_confidence')}</span>` : ''}
+      ${exp.language ? `<span class="text-xs dark:text-slate-500 text-slate-400">${esc(exp.language.toUpperCase())}</span>` : ''}
+      ${exp.query_context ? `<span class="text-xs dark:text-slate-500 text-slate-400">query: "${esc(exp.query_context)}"</span>` : ''}
+    </div>
+    <h3 class="text-sm font-semibold dark:text-slate-100 text-slate-800 leading-snug mb-1">${esc(title)}</h3>
+    ${summary ? `<p class="text-sm dark:text-slate-200 text-slate-700 font-medium leading-snug mb-3">${esc(summary)}</p>` : ''}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 mb-3">
+      ${fields.map(([label, val]) => `<div>
+        <span class="profile-label dark:text-slate-500 text-slate-400 block mb-0.5">${esc(label)}</span>
+        <span class="text-xs dark:text-slate-300 text-slate-700">${esc(val)}</span>
+      </div>`).join('')}
+    </div>
+    ${quotes.length ? `<div class="mt-2 space-y-1.5">
+      ${quotes.map(q => `<blockquote class="border-l-2 border-brand-500 pl-3 text-xs dark:text-slate-400 text-slate-500 italic">"${esc(q)}"</blockquote>`).join('')}
+    </div>` : ''}
+    ${exp.source_url ? `<div class="mt-2 pt-2 dark:border-surface-border border-slate-100 border-t text-xs">
+      <a href="${esc(exp.source_url)}" target="_blank" rel="noopener" class="dark:text-slate-500 text-slate-400 hover:text-brand-400 underline underline-offset-2 transition-colors">${esc(t('card_open_source'))}</a>
+    </div>` : ''}
+    ${date ? `<p class="text-xs dark:text-slate-600 text-slate-300 mt-3 text-right">${esc(date)}</p>` : ''}
+    <div class="mt-3">
+      <button class="translate-btn" data-card-id="${_ecid}" onclick="translateCard(this)">${t('translate_btn')}</button>
+    </div>
+    <div class="hidden"></div>
+  </article>`;
 }
 
 // Update the Experiences empty state based on a Reddit status code
@@ -2415,20 +2472,39 @@ async function loadExperiences() {
   const list  = document.getElementById('expList');
   const empty = document.getElementById('expEmpty');
   const skel  = document.getElementById('expSkeleton');
-  skel.classList.remove('hidden'); list.innerHTML = ''; empty.classList.add('hidden');
+  skel.classList.remove('hidden');
+  list.innerHTML = '';
+  empty.classList.add('hidden');
   try {
-    const res  = await fetch('/experiences?limit=50');
-    const data = await res.json();
+    const [legacyRes, rweRes] = await Promise.all([
+      fetch('/experiences?limit=50'),
+      fetch('/rwe/profiles?limit=50'),
+    ]);
+    const legacy = legacyRes.ok ? await legacyRes.json() : { total: 0, experiences: [] };
+    const rwe = rweRes.ok ? await rweRes.json() : { count: 0, profiles: [] };
     skel.classList.add('hidden');
-    const total = data.total || 0;
-    document.getElementById('expTotalBadge').textContent = total ? `${total} experience${total !== 1 ? 's' : ''}` : '';
-    document.getElementById('expNavCount').textContent   = total ? `(${total})` : '';
-    if (!data.experiences?.length) {
+
+    const legacyTotal = legacy.total || 0;
+    const rweTotal = rwe.count || 0;
+    const total = legacyTotal + rweTotal;
+    document.getElementById('expTotalBadge').textContent = total
+      ? `${legacyTotal} patient experience${legacyTotal !== 1 ? 's' : ''} · ${rweTotal} RWE profile${rweTotal !== 1 ? 's' : ''}`
+      : '';
+    document.getElementById('expNavCount').textContent = total ? `(${total})` : '';
+
+    const items = [
+      ...(legacy.experiences || []).map(x => ({ kind: 'legacy', ts: x.ingested_at || '', data: x })),
+      ...(rwe.profiles || []).map(x => ({ kind: 'rwe', ts: x.ingested_at || '', data: x })),
+    ].sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+
+    if (!items.length) {
       // Show default empty state (no status known at load time)
       updateExpEmptyState(null, null);
       return;
     }
-    list.innerHTML = data.experiences.map(buildExperienceCard).join('');
+    list.innerHTML = items.map(item => item.kind === 'legacy'
+      ? buildExperienceCard(item.data)
+      : buildRweProfileCard(item.data)).join('');
   } catch (e) {
     skel.classList.add('hidden');
     list.innerHTML = `<p class="text-xs text-red-400">Failed to load: ${esc(e.message)}</p>`;
@@ -2923,7 +2999,8 @@ async function refreshNavCounts() {
     const res  = await fetch('/stats');
     const data = await res.json();
     if (data.clinical_profiles)  document.getElementById('profilesNavCount').textContent  = `(${data.clinical_profiles})`;
-    if (data.patient_experiences) document.getElementById('expNavCount').textContent       = `(${data.patient_experiences})`;
+    const expTotal = (data.patient_experiences || 0) + (data.rwe_profiles || 0);
+    if (expTotal) document.getElementById('expNavCount').textContent = `(${expTotal})`;
   } catch(e) { /* silent */ }
 }
 
