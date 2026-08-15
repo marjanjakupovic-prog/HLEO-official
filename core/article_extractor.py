@@ -78,6 +78,47 @@ class ArticleExtractor:
             operation="article_extract",
         )
 
-        # Validate against Pydantic model to ensure shape correctness
+        # Normalize LLM output to match ClinicalProfile expectations before validation
+        if not isinstance(raw, dict):
+            # LLM should return a dict; if not, raise to surface the error
+            raise RuntimeError("Article extractor expected a JSON object from the LLM")
+
+        # Fields that must be lists of strings per ClinicalProfile schema
+        list_fields = [
+            "diagnosis", "triggers", "symptoms",
+            "treatments", "dosages", "treatment_duration",
+            "outcomes", "adverse_effects",
+            "laboratory_findings", "biopsy_findings", "imaging_findings",
+            "timeline",
+        ]
+
+        for k in list_fields:
+            v = raw.get(k)
+            # Normalise None -> [] and scalars -> [str(value)]
+            if v is None:
+                raw[k] = []
+            elif isinstance(v, list):
+                normalized = []
+                for item in v:
+                    if item is None:
+                        normalized.append("")
+                    else:
+                        normalized.append(str(item))
+                raw[k] = normalized
+            else:
+                # Scalar provided (string/number) -> wrap into list
+                raw[k] = [str(v)]
+
+        # Ensure parallel arrays (treatments, dosages, treatment_duration) are index-aligned
+        t_len = len(raw.get("treatments", []))
+        for arr_name in ("dosages", "treatment_duration"):
+            arr = raw.get(arr_name, [])
+            if not isinstance(arr, list):
+                arr = [str(arr)] if arr is not None else []
+            if len(arr) < t_len:
+                arr = arr + [""] * (t_len - len(arr))
+            raw[arr_name] = [str(x) if x is not None else "" for x in arr]
+
+        # Finally validate against Pydantic model to ensure shape correctness
         profile = ClinicalProfile.model_validate(raw)
         return profile.model_dump()
