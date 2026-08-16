@@ -2172,6 +2172,9 @@ document.getElementById('runPipelineBtn').addEventListener('click', async () => 
     showBanner('searchBanner', msg, 'success');
     // Scope profiles view to this search only; mark dirty so nav refreshes it
     _currentSearchEpisodeIds = data.episode_ids || [];
+    // NEW: persist clinical profile episode ids in the active search context
+    _activeSearchCtx = _activeSearchCtx || {};
+    _activeSearchCtx.clinical_profile_episode_ids = data.episode_ids || [];
     _profilesDirty = true;
     if (activePage === 'profiles') loadProfiles();
     refreshNavCounts();
@@ -2395,6 +2398,16 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
       if (errors) msg += `, ${errors} errori`;
       msg += `. <button onclick="showPage('experiences')" class="underline ml-1">Vedi esperienze RWE</button>`;
       showBanner('searchBanner', msg, 'success');
+      // NEW: collect created RWE profile episode_ids and attach to active search context
+      try {
+        const created_ids = (data.results || []).filter(r => r && r.status === 'created').map(r => r.episode_id).filter(Boolean);
+        if (created_ids.length) {
+          _activeSearchCtx = _activeSearchCtx || {};
+          _activeSearchCtx.rwe_profile_episode_ids = (_activeSearchCtx.rwe_profile_episode_ids || []).concat(created_ids);
+        }
+      } catch(e) {
+        // non-fatal: context sync best-effort
+      }
       if (activePage === 'experiences') loadExperiences();
       refreshNavCounts();
     } catch(err) {
@@ -3316,6 +3329,10 @@ async function runCompare() {
       title: r.title || '', text: r.text || '',
       treatment: r.treatment || '', condition: r.condition || '',
     })),
+    // NEW: include explicit episode-id lists so the backend can fetch ALL persisted
+    // ClinicalProfile / RWEProfile associated with the current search/context.
+    clinical_profile_episode_ids: _activeSearchCtx?.clinical_profile_episode_ids || [],
+    rwe_profile_episode_ids: _activeSearchCtx?.rwe_profile_episode_ids || [],
   };
   btn.disabled = true;
   const lbl = btn.querySelector('span');

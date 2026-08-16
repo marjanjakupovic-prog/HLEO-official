@@ -1395,19 +1395,91 @@ def assistant_chat(
     ]
 
     # ── RAG: retrieve relevant context from DB ──────────────────────
-    # Skip entirely when current search articles are available — the retrieved
-    # scientific literature is the sole primary source in that case.
-    # DB records are only fetched (and injected) when there are no search articles.
+    # If the effective search context includes explicit episode-id lists
+    # for clinical and/or RWE profiles, fetch those DB rows and include them
+    # in the LLM context. This guarantees that ALL profiles produced by the
+    # current search are included automatically.
     user_msg_lower = body.message.lower()
     context_snippets: list = []
     context_episode_ids: list = []
 
+    # Build a raw dict from the provided search_context or from the stored session
+    sc_raw = None
+    if body.search_context is not None:
+        try:
+            sc_raw = body.search_context.model_dump()
+        except Exception:
+            try:
+                sc_raw = dict(body.search_context)
+            except Exception:
+                sc_raw = None
+    elif session.search_context:
+        sc_raw = session.search_context
+
+    clinical_ids = sc_raw.get("clinical_profile_episode_ids", []) if sc_raw else []
+    rwe_ids = sc_raw.get("rwe_profile_episode_ids", []) if sc_raw else []
+
+    included_eps = set()
+
+    # Fetch ClinicalProfile rows referenced by the search context, if any
+    if clinical_ids:
+        cp_rows = db.execute(
+            select(ClinicalProfile).where(ClinicalProfile.episode_id.in_(clinical_ids))
+        ).scalars().all()
+        for cp in cp_rows:
+            vp = cp.validation_payload or {}
+            payload = cp.extracted_payload or {}
+            diag = ", ".join(payload.get("diagnosis", [])[:3])
+            treats = ", ".join(payload.get("treatments", [])[:4])
+            dosages = ", ".join(payload.get("dosages", [])[:4])
+            outcomes = ", ".join(payload.get("outcomes", [])[:3])
+            ae = ", ".join(payload.get("adverse_effects", [])[:3])
+            ev_level = payload.get("evidence_level", "")
+            study_pop = payload.get("study_population", "")
+            snippet = (
+                f"[Clinical Profile — {cp.user_id.upper()}, {vp.get('pub_year','')}] "
+                f"'{vp.get('title','')[:100]}'"
+                f"{f' ({ev_level})' if ev_level else ''}"
+                f"{f' [{study_pop}]' if study_pop else ''}\n"
+                f"  Diagnosis: {diag or 'N/A'}\n"
+                f"  Treatments: {treats or 'N/A'}"
+                f"{f' | Dosages: {dosages}' if dosages else ''}\n"
+                f"  Outcomes: {outcomes or 'N/A'}\n"
+                f"  Adverse effects: {ae or 'N/A'}"
+            )
+            context_snippets.append(snippet)
+            context_episode_ids.append(cp.episode_id)
+            included_eps.add(cp.episode_id)
+
+    # Fetch RWEProfile rows referenced by the search context, if any
+    if rwe_ids:
+        rp_rows = db.execute(
+            select(RWEProfile).where(RWEProfile.episode_id.in_(rwe_ids))
+        ).scalars().all()
+        for rp in rp_rows:
+            p = rp.extracted_profile or {}
+            condition = p.get("condition", "unknown condition")
+            summary = p.get("experience_summary", "")
+            treats = ", ".join(p.get("treatments_tried", [])[:3]) or p.get("treatment", "")
+            outcomes = ", ".join(p.get("reported_outcomes", [])[:3])
+            snippet = (
+                f"[RWEProfile — {rp.source}] {rp.title or rp.episode_id}\n"
+                f"  Condition: {condition}\n"
+                f"  Summary: {summary[:200] if summary else 'N/A'}\n"
+                f"  Treatments tried: {treats or 'N/A'}\n"
+                f"  Reported outcomes: {outcomes or 'N/A'}"
+            )
+            context_snippets.append(snippet)
+            context_episode_ids.append(rp.episode_id)
+            included_eps.add(rp.episode_id)
+
+    # Existing fallback DB retrieval (RAG) remains but will avoid duplicating snippets
     _has_search_articles_early = bool(
         effective_search_ctx and effective_search_ctx.articles
     )
 
     if not _has_search_articles_early:
-        # Search clinical profiles
+        # Search clinical profiles (existing behaviour) but skip ones already included
         cp_rows = db.execute(
             select(ClinicalProfile)
             .order_by(desc(ClinicalProfile.processed_at))
@@ -1415,6 +1487,8 @@ def assistant_chat(
         ).scalars().all()
 
         for cp in cp_rows:
+            if cp.episode_id in included_eps:  # avoid duplicate snippet
+                continue
             vp = cp.validation_payload or {}
             title = vp.get("title", "").lower()
             payload = cp.extracted_payload or {}
@@ -1444,7 +1518,7 @@ def assistant_chat(
                 if len(context_snippets) >= 5:
                     break
 
-        # Search patient experiences
+        # Search patient experiences as before, skipping included ones
         pe_rows = db.execute(
             select(PatientExperience)
             .order_by(desc(PatientExperience.ingested_at))
@@ -1452,6 +1526,8 @@ def assistant_chat(
         ).scalars().all()
 
         for pe in pe_rows:
+            if pe.episode_id in included_eps:
+                continue
             p = pe.extracted_profile or {}
             payload_text = _json.dumps(p).lower()
             if any(word in payload_text for word in user_msg_lower.split() if len(word) > 3):
@@ -2079,10 +2155,13 @@ class CompareRequest(BaseModel):
     language: str = "en"
     scientific_articles: List[SearchArticleCtx] = []
     rwe_evidence: List[RWEItemCtx] = []
+    # Optional episode-id lists: backend will fetch full profiles when provided
+    clinical_profile_episode_ids: List[str] = []
+    rwe_profile_episode_ids: List[str] = []
 
 
 @app.post("/assistant/compare")
-def assistant_compare(body: CompareRequest):
+def assistant_compare(body: CompareRequest, db: Session = Depends(get_db)):
     """FASE 15: structured Scientific vs RWE comparison.
 
     Produces a structured comparison showing where scientific evidence and RWE
@@ -2096,31 +2175,65 @@ def assistant_compare(body: CompareRequest):
     if not api_key:
         return {"error": "OPENAI_API_KEY not set."}
 
-    if not body.scientific_articles and not body.rwe_evidence:
+    if not (body.scientific_articles or body.rwe_evidence or getattr(body, 'clinical_profile_episode_ids', None) or getattr(body, 'rwe_profile_episode_ids', None)):
         return {"error": "No evidence provided for comparison."}
 
     from openai import OpenAI
     from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
     client = OpenAI(api_key=api_key)
 
-    # Format scientific articles
-    sci_lines = []
-    for i, a in enumerate(body.scientific_articles[:10]):
-        ident = a.pmid or a.doi or a.nct_id or a.url or ""
-        sci_lines.append(
-            f"[S{i}] {a.source} | {ident} — {a.title}\n"
-            f"    {(a.abstract or '')[:600]}"
-        )
-    sci_block = "\n".join(sci_lines) or "(no scientific articles)"
+    # If explicit episode-id lists were provided, fetch DB rows and build blocks
+    sci_block = ""
+    if getattr(body, "clinical_profile_episode_ids", None):
+        cp_ids = [eid for eid in (body.clinical_profile_episode_ids or []) if eid]
+        if cp_ids:
+            cp_rows = db.execute(select(ClinicalProfile).where(ClinicalProfile.episode_id.in_(cp_ids))).scalars().all()
+            cp_count = len(cp_rows)
+            sci_lines = []
+            for i, cp in enumerate(cp_rows):
+                vp = cp.validation_payload or {}
+                payload = cp.extracted_payload or {}
+                diag = ", ".join(payload.get("diagnosis", [])[:3])
+                treats = ", ".join(payload.get("treatments", [])[:4])
+                art_title = vp.get("title", "") or cp.episode_id
+                sci_lines.append(
+                    f"[CP{i}] ClinicalProfile | {cp.episode_id} — {art_title}\n"
+                    f"    Diagnosis: {diag[:200]}\n"
+                    f"    Treatments: {treats[:200]}"
+                )
+            sci_block = "\n".join(sci_lines) or "(no clinical profiles)"
+    else:
+        sci_lines = []
+        for i, a in enumerate(body.scientific_articles[:10]):
+            ident = a.pmid or a.doi or a.nct_id or a.url or ""
+            sci_lines.append(
+                f"[S{i}] {a.source} | {ident} — {a.title}\n"
+                f"    {(a.abstract or '')[:600]}"
+            )
+        sci_block = "\n".join(sci_lines) or "(no scientific articles)"
 
-    # Format RWE items
-    rwe_lines = []
-    for i, r in enumerate(body.rwe_evidence[:10]):
-        rwe_lines.append(
-            f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
-            f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
-        )
-    rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
+    # RWE block: either from episode ids or from provided rwe_evidence
+    rwe_block = ""
+    if getattr(body, "rwe_profile_episode_ids", None):
+        rwe_ids = [eid for eid in (body.rwe_profile_episode_ids or []) if eid]
+        if rwe_ids:
+            rp_rows = db.execute(select(RWEProfile).where(RWEProfile.episode_id.in_(rwe_ids))).scalars().all()
+            rp_count = len(rp_rows)
+            rwe_lines = []
+            for i, r in enumerate(rp_rows):
+                rwe_lines.append(
+                    f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
+                    f"    treatment={r.treatment or '?'}; {(r.raw_text or '')[:500]}"
+                )
+            rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
+    else:
+        rwe_lines = []
+        for i, r in enumerate(body.rwe_evidence[:10]):
+            rwe_lines.append(
+                f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
+                f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
+            )
+        rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
 
     _LANG_MAP = {
         "it": "Italian", "en": "English", "fr": "French",
@@ -2177,8 +2290,8 @@ def assistant_compare(body: CompareRequest):
 
     parsed["query"] = body.query
     parsed["language"] = body.language
-    parsed["scientific_count"] = len(body.scientific_articles)
-    parsed["rwe_count"] = len(body.rwe_evidence)
+    parsed["scientific_count"] = cp_count if 'cp_count' in locals() and isinstance(cp_count, int) else len(body.scientific_articles)
+    parsed["rwe_count"] = rp_count if 'rp_count' in locals() and isinstance(rp_count, int) else len(body.rwe_evidence)
     return parsed
 
 
