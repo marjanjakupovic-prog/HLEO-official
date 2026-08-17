@@ -3311,28 +3311,46 @@ async function runCompare() {
     out.classList.add('hidden');
     return;
   }
-  if (!_activeSearchCtx) return;
-  const body = {
-    query: _activeSearchCtx.original_query || lastQuery || '',
-    search_query: _activeSearchCtx.search_query || '',
-    detected_language: _activeSearchCtx.detected_language || 'en',
-    language: currentLang,
-    scientific_articles: (_activeSearchCtx.articles || []).map(a => ({
+  if (!_activeSearchCtx && !(typeof _searchStates !== 'undefined')) return;
+
+  // === MERGE CONTEXT FOR ASSISTANT ===
+  // Build merged episode-id lists from:
+  //  - the current active context (if any)
+  //  - the per-mode snapshot contexts stored in _searchStates (scientific / rwe)
+  // This preserves per-mode snapshots but guarantees runCompare() sends ALL profiles.
+  const sciSnapshot = (typeof _searchStates !== 'undefined' && _searchStates.scientific && _searchStates.scientific.activeSearchCtx) ? _searchStates.scientific.activeSearchCtx : null;
+  const rweSnapshot = (typeof _searchStates !== 'undefined' && _searchStates.rwe && _searchStates.rwe.activeSearchCtx) ? _searchStates.rwe.activeSearchCtx : null;
+
+  const clinicalFromActive = (_activeSearchCtx && Array.isArray(_activeSearchCtx.clinical_profile_episode_ids)) ? _activeSearchCtx.clinical_profile_episode_ids : [];
+  const clinicalFromSnapshot = (sciSnapshot && Array.isArray(sciSnapshot.clinical_profile_episode_ids)) ? sciSnapshot.clinical_profile_episode_ids : [];
+  const mergedClinicalIds = Array.from(new Set([...(clinicalFromActive || []), ...(clinicalFromSnapshot || [])]));
+
+  const rweFromActive = (_activeSearchCtx && Array.isArray(_activeSearchCtx.rwe_profile_episode_ids)) ? _activeSearchCtx.rwe_profile_episode_ids : [];
+  const rweFromSnapshot = (rweSnapshot && Array.isArray(rweSnapshot.rwe_profile_episode_ids)) ? rweSnapshot.rwe_profile_episode_ids : [];
+  const mergedRweIds = Array.from(new Set([...(rweFromActive || []), ...(rweFromSnapshot || [])]));
+
+  const compareContext = {
+    query: _activeSearchCtx?.original_query || lastQuery || '',
+    search_query: _activeSearchCtx?.search_query || '',
+    detected_language: _activeSearchCtx?.detected_language || 'en',
+    scientific_articles: (_activeSearchCtx?.articles || []).map(a => ({
       source: a.source || '', title: a.title || '', abstract: a.abstract || '',
       url: a.url || '', pmid: a.pmid || '', doi: a.doi || '',
       nct_id: a.nct_id || '', year: a.year || '', journal: a.journal || '',
     })),
-    rwe_evidence: (_activeSearchCtx.rwe_evidence || []).map(r => ({
+    rwe_evidence: (_activeSearchCtx?.rwe_evidence || []).map(r => ({
       source: r.source || '', source_type: r.source_type || '',
       evidence_tier: r.evidence_tier || 'anecdotal',
       source_url: r.source_url || '', external_id: r.external_id || '',
       title: r.title || '', text: r.text || '',
       treatment: r.treatment || '', condition: r.condition || '',
     })),
-    // NEW: include explicit episode-id lists so the backend can fetch ALL persisted
-    // ClinicalProfile / RWEProfile associated with the current search/context.
-    clinical_profile_episode_ids: _activeSearchCtx?.clinical_profile_episode_ids || [],
-    rwe_profile_episode_ids: _activeSearchCtx?.rwe_profile_episode_ids || [],
+    clinical_profile_episode_ids: mergedClinicalIds || [],
+    rwe_profile_episode_ids: mergedRweIds || [],
+  };
+  const body = {
+    ...compareContext,
+    language: currentLang,
   };
   btn.disabled = true;
   const lbl = btn.querySelector('span');
