@@ -317,21 +317,22 @@ def search(q: str = Query(..., description="Search query"),
 
 @app.post("/pipeline/run")
 def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
-                 mode: str = Query("scientific", description="Extraction mode: 'scientific' (relational, relevant-only) | 'global' (broad, all articles).")):
+                 mode: str = Query("scientific", description="Extraction mode: 'scientific' (relational, relevant-only) | 'global' (broad, all articles)."),
+                 max_results: Optional[int] = Query(None, description="Optional cap on number of articles to process (testing)")):
     """
-    Full article pipeline:
+    Full article pipeline (NO persistent storage of extracted profiles by default):
     1. Collect from PubMed, EuropePMC, ClinicalTrials (Reddit only in global)
     2. LLM-extract a ClinicalProfile from each abstract
-    3. Save profile + SourceAttribution to DB
-    Returns summary and saved profiles.
+    3. RETURN extracted profiles in the response (do NOT save them to the DB)
 
     Modes:
       - scientific (default): uses RelationalSearch (Level 2) and extracts profiles
         ONLY from articles judged `relevant` by the relational judge. Requires
-        OPENAI_API_KEY. The relation is preserved and relevance_label/score/reason
-        are stored in validation_payload so profiles stay relation-pure.
+        OPENAI_API_KEY.
       - global: broad keyword pipeline (orchestrator + collect), extracts from all
-        retrieved articles, no relevance filter (prior behavior).
+        retrieved articles.
+
+    NOTE: This endpoint no longer persists ClinicalProfile/SourceAttribution.
     """
     from core.article_extractor import ArticleExtractor
 
@@ -375,32 +376,19 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
         raw = pipeline.collect(orch_search_query)
         articles = _articles_from_raw(raw)
 
-    # ── Phase 1: Pre-checks (sequential, cheap DB lookups) ───────────────────
-    # Resolve already-existing records and no-abstract skips before any LLM work.
-    # The DB session stays on the main thread for all three phases.
+    # Optional testing cap: restrict number of articles processed to speed up E2E in CI/dev
+    if max_results and isinstance(articles, list) and len(articles) > max_results:
+        articles = articles[:max_results]
+
+    # ── Phase 1: Pre-checks (no DB lookups for previous results) ─────────────
     pre_results: dict[int, dict] = {}        # index → resolved entry (skip cases)
     needs_llm:   list[tuple[int, dict]] = [] # (index, art) requiring extraction
 
     for i, art in enumerate(articles):
         episode_id = art["episode_id"]
 
-        existing = db.execute(
-            select(ClinicalProfile).where(ClinicalProfile.episode_id == episode_id)
-        ).scalar_one_or_none()
-
-        if existing:
-            pre_results[i] = {
-                "episode_id":  episode_id,
-                "status":      "already_exists",
-                "db_id":       existing.id,
-                "source":      art["source"],
-                "title":       art["title"],
-                "profile":     existing.extracted_payload,
-                "attribution": _get_attribution(db, episode_id),
-            }
-            continue
-
-        if not art["abstract"]:
+        # Skip items with no abstract (can't extract)
+        if not art.get("abstract"):
             pre_results[i] = {
                 "_is_error":  True,
                 "episode_id": episode_id,
@@ -410,14 +398,9 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
 
         needs_llm.append((i, art))
 
-    # ── Phase 2: Parallel LLM extraction ─────────────────────────────────────
-    # Only extractor.extract() calls run concurrently.
-    # max_workers=8 caps simultaneous gpt-4o calls — safe for OpenAI Tier-1 limits.
-    # Results are keyed by the original position index so order is preserved.
-    # One failure never propagates to the others.
+    # ── Phase 2: Parallel LLM extraction (unchanged) ────────────────────────
     _MAX_WORKERS = 8
     llm_results: dict[int, tuple] = {}
-    # value: ("ok", payload, None) | ("error", None, err_str)
 
     if needs_llm:
         def _extract_one(idx_art: tuple) -> tuple:
@@ -457,15 +440,13 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
             sum(1 for v in llm_results.values() if v[0] == "error"),
         )
 
-    # ── Phase 3: DB writes (sequential, main thread, original order) ──────────
-    # Iterate by original index so saved[] and errors[] are in input order.
+    # ── Phase 3: Build results for response (NO DB writes) ────────────────
     saved = []
     errors = []
 
     for i, art in enumerate(articles):
         episode_id = art["episode_id"]
 
-        # Pre-resolved in Phase 1 (DB hit or no-abstract)
         if i in pre_results:
             entry = pre_results[i]
             if entry.get("_is_error"):
@@ -474,7 +455,6 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
                 saved.append(entry)
             continue
 
-        # Should always be present after Phase 2 ran
         if i not in llm_results:
             errors.append({"episode_id": episode_id, "error": "Extraction result missing."})
             continue
@@ -484,62 +464,29 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
             errors.append({"episode_id": episode_id, "error": err})
             continue
 
-        try:
-            row = ClinicalProfile(
-                episode_id=episode_id,
-                user_id=art["source"],
-                final_category="N/A",
-                confidence_score=0.0,
-                adjudication_required=False,
-                extracted_payload=payload,
-                validation_payload={
-                    "source":         art["source"],
-                    "title":          art["title"],
-                    "url":            art["url"],
-                    "abstract_chars": len(art["abstract"]),
-                    "journal":        art["journal"],
-                    "pub_year":       art["pub_year"],
-                    "meta":           art["meta"],
-                    "relevance_label":  art.get("relevance_label"),
-                    "relevance_score":  art.get("relevance_score"),
-                    "relevance_reason": art.get("relevance_reason"),
-                },
-            )
-            db.add(row)
-            db.flush()
+        # Build in-memory result entry (no DB persistence)
+        entry = {
+            "episode_id": episode_id,
+            "status": "extracted",
+            "source": art.get("source"),
+            "title": art.get("title"),
+            "profile": payload,
+            "validation_payload": {
+                "source": art.get("source"),
+                "title": art.get("title"),
+                "url": art.get("url"),
+                "abstract_chars": len(art.get("abstract") or ""),
+                "journal": art.get("journal"),
+                "pub_year": art.get("pub_year"),
+                "meta": art.get("meta", {}),
+                "relevance_label": art.get("relevance_label"),
+                "relevance_score": art.get("relevance_score"),
+                "relevance_reason": art.get("relevance_reason"),
+            },
+        }
+        saved.append(entry)
 
-            attr = SourceAttribution(
-                profile_episode_id=episode_id,
-                source_type=art["source"],
-                source_title=art["title"],
-                source_url=art["url"],
-                external_id=art["external_id"],
-                journal=art["journal"],
-                pub_year=art["pub_year"],
-                abstract_excerpt=art["abstract"][:500],
-            )
-            db.add(attr)
-            db.commit()
-            db.refresh(row)
-
-            saved.append({
-                "episode_id": episode_id,
-                "status":     "saved",
-                "db_id":      row.id,
-                "source":     art["source"],
-                "title":      art["title"],
-                "profile":    payload,
-                "attribution": _get_attribution(db, episode_id),
-            })
-            logger.info("Saved profile %s", episode_id)
-
-        except Exception as exc:
-            db.rollback()
-            logger.exception("Failed to write %s: %s", episode_id, exc)
-            errors.append({"episode_id": episode_id, "error": str(exc)})
-
-    # Flat list of ALL episode_ids processed (new + pre-existing) — used by frontend
-    # to filter the profiles view to only this search's results.
+    # Flat list of ALL episode_ids processed — used by frontend to scope the profiles view
     all_episode_ids = [s["episode_id"] for s in saved]
 
     # Build orchestration dict for the response (mode-aware).
@@ -558,10 +505,10 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
         "query":           q,
         "orchestration":   orchestration_out,
         "processed":       len(articles),
-        "saved":           len([s for s in saved if s["status"] == "saved"]),
-        "already_existed": len([s for s in saved if s["status"] == "already_exists"]),
+        "saved":           len(saved),
+        "already_existed": 0,
         "errors":          len(errors),
-        "episode_ids":     all_episode_ids,   # ← Feature: search-scoped profile filtering
+        "episode_ids":     all_episode_ids,
         "results":         saved,
         "error_details":   errors,
     }
@@ -687,20 +634,15 @@ def ingest_experiences(q: str = Query(...), db: Session = Depends(get_db)):
     saved  = []
     errors = []
 
+    seen_urls = set()
+
     for post in raw_reddit:
         episode_id = f"reddit-exp-{abs(hash(post.url))}"
 
-        existing = db.execute(
-            select(PatientExperience).where(PatientExperience.episode_id == episode_id)
-        ).scalar_one_or_none()
-        if existing:
-            saved.append({
-                "episode_id": episode_id,
-                "status":  "already_exists",
-                "title":   post.title,
-                "profile": existing.extracted_profile,
-            })
+        if episode_id in seen_urls:
+            saved.append({"episode_id": episode_id, "status": "skipped", "title": post.title})
             continue
+        seen_urls.add(episode_id)
 
         body = (post.text or "").strip()
         if len(body) < 50:
@@ -715,35 +657,21 @@ def ingest_experiences(q: str = Query(...), db: Session = Depends(get_db)):
                 url=post.url or "",
             )
 
-            row = PatientExperience(
-                episode_id=episode_id,
-                source_platform="reddit",
-                source_url=post.url,
-                author=post.author,
-                raw_text=body[:4000],
-                extracted_profile=profile,
-                query_context=q,
-            )
-            db.add(row)
-            db.commit()
-            db.refresh(row)
-
+            # Build in-memory patient experience result (no DB persistence)
             saved.append({
                 "episode_id": episode_id,
-                "status": "saved",
-                "db_id":  row.id,
-                "title":  post.title,
-                "url":    post.url,
+                "status": "extracted",
+                "title": post.title,
+                "url": post.url,
                 "profile": profile,
             })
-            logger.info(f"Saved patient experience {episode_id}")
+            logger.info(f"Extracted patient experience {episode_id}")
 
         except Exception as exc:
-            db.rollback()
             logger.exception(f"Failed to extract experience {episode_id}: {exc}")
             errors.append({"episode_id": episode_id, "error": str(exc)})
 
-    n_saved = len([s for s in saved if s["status"] == "saved"])
+    n_saved = len([s for s in saved if s.get('status') in ('saved','extracted')])
     return {
         "query":           q,
         "orchestration":   orch.to_dict(),
@@ -832,27 +760,15 @@ class RWEExtractRequest(BaseModel):
 def rwe_extract_profile(body: RWEExtractRequest, db: Session = Depends(get_db)):
     """FASE 13: LLM-extract a structured profile from a single RWE item.
 
-    Persists the result as an RWEProfile row. Returns the extracted profile.
-    Skips items already extracted (external_id dedup).
+    NOTE: Under the new architecture, extracted RWE profiles are NOT persisted
+    by default. This endpoint returns the extracted profile in the response
+    so the frontend can use it as part of the current search context.
     """
     import os, hashlib
 
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         return {"error": "OPENAI_API_KEY not set."}
-
-    # Dedup by external_id if present
-    if body.external_id:
-        existing = db.query(RWEProfile).filter(
-            RWEProfile.external_id == body.external_id
-        ).first()
-        if existing:
-            return {
-                "episode_id": existing.episode_id,
-                "extracted_profile": existing.extracted_profile,
-                "already_existed": True,
-                "source": existing.source,
-            }
 
     from core.rwe.profile_extractor import RWEProfileExtractor
     extractor = RWEProfileExtractor()
@@ -871,36 +787,17 @@ def rwe_extract_profile(body: RWEExtractRequest, db: Session = Depends(get_db)):
         logger.exception(f"/rwe/extract failed — {exc}")
         return {"error": f"RWE extraction failed: {exc}"}
 
-    episode_id = "rwe-" + hashlib.md5(
-        f"{body.source}:{body.external_id or body.title}:{body.text[:100]}".encode()
+    dedup_key = body.external_id or hashlib.md5(
+        f"{body.source}:{body.external_id or body.title}:{(body.text or '')[:120]}".encode()
     ).hexdigest()[:16]
+    episode_id = f"rwe-{dedup_key}"
 
-    row = RWEProfile(
-        episode_id=episode_id,
-        source=body.source,
-        source_type=body.source_type,
-        evidence_tier=body.evidence_tier,
-        source_url=body.source_url,
-        external_id=body.external_id,
-        title=body.title,
-        raw_text=(body.text or "")[:5000],
-        extracted_profile=profile,
-        treatment=profile.get("treatment") or body.treatment,
-        condition=profile.get("condition") or body.condition,
-        experience_type=profile.get("experience_type") or body.experience_type,
-        query_context=body.query_context,
-        language=body.language,
-        is_testimonial=False,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-
+    # Return extracted profile without persisting to DB
     return {
-        "episode_id": row.episode_id,
+        "episode_id": episode_id,
         "extracted_profile": profile,
-        "already_existed": False,
-        "source": row.source,
+        "status": "extracted",
+        "source": body.source,
     }
 
 
@@ -992,6 +889,8 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
     error_details = []
     results = []
 
+    seen_keys = set()
+
     for it in body.items:
         # Dedup by (source, external_id) — if external_id missing, fall back to
         # a content hash so the same item isn't extracted twice.
@@ -999,24 +898,11 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
             f"{it.source}:{it.title}:{(it.text or '')[:120]}".encode()
         ).hexdigest()[:16]
 
-        existing = None
-        if it.external_id:
-            existing = db.query(RWEProfile).filter(
-                RWEProfile.external_id == it.external_id
-            ).first()
-        if existing is None:
-            existing = db.query(RWEProfile).filter(
-                RWEProfile.episode_id == f"rwe-{dedup_key}"
-            ).first()
-
-        if existing:
+        if dedup_key in seen_keys:
             skipped += 1
-            results.append({
-                "episode_id": existing.episode_id,
-                "source": existing.source,
-                "status": "already_exists",
-            })
+            results.append({"episode_id": f"rwe-{dedup_key}", "source": it.source, "status": "skipped"})
             continue
+        seen_keys.add(dedup_key)
 
         # Skip near-empty items — nothing to extract.
         if not (it.title or "").strip() and not (it.text or "").strip():
@@ -1038,43 +924,18 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
             error_details.append({"source": it.source, "error": str(exc)})
             continue
         except Exception as exc:
-            db.rollback()
             errors += 1
             error_details.append({"source": it.source, "error": str(exc)})
             continue
 
         episode_id = f"rwe-{dedup_key}"
-        row = RWEProfile(
-            episode_id=episode_id,
-            source=it.source,
-            source_type=it.source_type,
-            evidence_tier=it.evidence_tier,
-            source_url=it.source_url,
-            external_id=it.external_id or dedup_key,
-            title=it.title,
-            raw_text=(it.text or "")[:5000],
-            extracted_profile=profile,
-            treatment=profile.get("treatment") or it.treatment,
-            condition=profile.get("condition") or it.condition,
-            experience_type=profile.get("experience_type") or it.experience_type,
-            query_context=body.query,
-            language=it.language,
-            is_testimonial=False,
-        )
-        db.add(row)
-        try:
-            db.commit()
-            db.refresh(row)
-            created += 1
-            results.append({
-                "episode_id": episode_id,
-                "source": it.source,
-                "status": "created",
-            })
-        except Exception as exc:
-            db.rollback()
-            errors += 1
-            error_details.append({"source": it.source, "error": f"DB error: {exc}"})
+        results.append({
+            "episode_id": episode_id,
+            "source": it.source,
+            "status": "extracted",
+            "profile": profile,
+        })
+        created += 1
 
     return {
         "query": body.query,
@@ -1349,38 +1210,42 @@ def assistant_chat(
             detail="This session is closed. Reopen it before sending messages.",
         )
 
-    # ── Persist search context on session (isolation guarantee) ────
-    # Always overwrite so the session always reflects the latest search.
+    # ── Persist ONLY minimal search metadata (history of last 10 searches) on session
+    # This stores metadata for chat continuity but NOT the full profiles or extracted data.
     now_utc = datetime.now(timezone.utc)
     if body.search_context is not None:
-        session.search_query   = body.search_context.original_query
-        session.search_context = body.search_context.model_dump()
-        session.updated_at     = now_utc
+        try:
+            sc = body.search_context
+            meta = {
+                "original_query": getattr(sc, "original_query", ""),
+                "search_query": getattr(sc, "search_query", ""),
+                "detected_language": getattr(sc, "detected_language", ""),
+                "articles_count": len(getattr(sc, "articles", []) or []),
+                "rwe_count": len(getattr(sc, "rwe_evidence", []) or []),
+                "timestamp": now_utc.isoformat(),
+            }
+        except Exception:
+            meta = {"original_query": "", "search_query": "", "detected_language": "", "articles_count": 0, "rwe_count": 0, "timestamp": now_utc.isoformat()}
+
+        try:
+            existing = session.search_context or {}
+            history = existing.get("history", []) if isinstance(existing, dict) else []
+        except Exception:
+            history = []
+        # Prepend and trim to last 10
+        history = [meta] + history
+        history = history[:10]
+        session.search_query = meta.get("original_query", "")
+        session.search_context = {"history": history, "last_updated": now_utc.isoformat()}
+        session.updated_at = now_utc
         db.commit()
     else:
         session.updated_at = now_utc
         db.commit()
 
-    # ── Resolve effective search context (backend-enforced isolation) ──
-    # If the frontend didn't send a search_context, fall back to the one
-    # stored on THIS session — never from any other session.
-    effective_search_ctx = body.search_context
-    if effective_search_ctx is None and session.search_context:
-        try:
-            sc_data = session.search_context
-            effective_search_ctx = SearchContext(
-                original_query=sc_data.get("original_query", ""),
-                search_query=sc_data.get("search_query", ""),
-                detected_language=sc_data.get("detected_language", "en"),
-                articles=[
-                    SearchArticleCtx(**a) for a in sc_data.get("articles", [])
-                ],
-                rwe_evidence=[
-                    RWEItemCtx(**r) for r in sc_data.get("rwe_evidence", [])
-                ],
-            )
-        except Exception:
-            effective_search_ctx = None
+    # ── Resolve effective search context: use the live context provided by the client only.
+    # Do NOT reconstruct full search contexts from stored session metadata (which is only history).
+    effective_search_ctx = body.search_context if body.search_context is not None else None
 
     # ── Load conversation history ───────────────────────────────────
     history_rows = db.execute(
@@ -2182,58 +2047,27 @@ def assistant_compare(body: CompareRequest, db: Session = Depends(get_db)):
     from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
     client = OpenAI(api_key=api_key)
 
-    # If explicit episode-id lists were provided, fetch DB rows and build blocks
-    sci_block = ""
-    if getattr(body, "clinical_profile_episode_ids", None):
-        cp_ids = [eid for eid in (body.clinical_profile_episode_ids or []) if eid]
-        if cp_ids:
-            cp_rows = db.execute(select(ClinicalProfile).where(ClinicalProfile.episode_id.in_(cp_ids))).scalars().all()
-            cp_count = len(cp_rows)
-            sci_lines = []
-            for i, cp in enumerate(cp_rows):
-                vp = cp.validation_payload or {}
-                payload = cp.extracted_payload or {}
-                diag = ", ".join(payload.get("diagnosis", [])[:3])
-                treats = ", ".join(payload.get("treatments", [])[:4])
-                art_title = vp.get("title", "") or cp.episode_id
-                sci_lines.append(
-                    f"[CP{i}] ClinicalProfile | {cp.episode_id} — {art_title}\n"
-                    f"    Diagnosis: {diag[:200]}\n"
-                    f"    Treatments: {treats[:200]}"
-                )
-            sci_block = "\n".join(sci_lines) or "(no clinical profiles)"
-    else:
-        sci_lines = []
-        for i, a in enumerate(body.scientific_articles[:10]):
-            ident = a.pmid or a.doi or a.nct_id or a.url or ""
-            sci_lines.append(
-                f"[S{i}] {a.source} | {ident} — {a.title}\n"
-                f"    {(a.abstract or '')[:600]}"
-            )
-        sci_block = "\n".join(sci_lines) or "(no scientific articles)"
+    # Build SCIENTIFIC and RWE blocks from the provided live search_context in the request.
+    # Under the new architecture we DO NOT fetch profiles from the DB; the frontend
+    # must supply the relevant scientific_articles and rwe_evidence arrays.
+    sci_lines = []
+    for i, a in enumerate(body.scientific_articles[:10]):
+        ident = a.pmid or a.doi or a.nct_id or a.url or ""
+        sci_lines.append(
+            f"[S{i}] {a.source} | {ident} — {a.title}\n"
+            f"    {(a.abstract or '')[:600]}"
+        )
+    sci_block = "\n".join(sci_lines) or "(no scientific articles)"
+    cp_count = len(body.scientific_articles or [])
 
-    # RWE block: either from episode ids or from provided rwe_evidence
-    rwe_block = ""
-    if getattr(body, "rwe_profile_episode_ids", None):
-        rwe_ids = [eid for eid in (body.rwe_profile_episode_ids or []) if eid]
-        if rwe_ids:
-            rp_rows = db.execute(select(RWEProfile).where(RWEProfile.episode_id.in_(rwe_ids))).scalars().all()
-            rp_count = len(rp_rows)
-            rwe_lines = []
-            for i, r in enumerate(rp_rows):
-                rwe_lines.append(
-                    f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
-                    f"    treatment={r.treatment or '?'}; {(r.raw_text or '')[:500]}"
-                )
-            rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
-    else:
-        rwe_lines = []
-        for i, r in enumerate(body.rwe_evidence[:10]):
-            rwe_lines.append(
-                f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
-                f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
-            )
-        rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
+    rwe_lines = []
+    for i, r in enumerate(body.rwe_evidence[:10]):
+        rwe_lines.append(
+            f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
+            f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
+        )
+    rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
+    rp_count = len(body.rwe_evidence or [])
 
     _LANG_MAP = {
         "it": "Italian", "en": "English", "fr": "French",

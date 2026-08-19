@@ -230,6 +230,13 @@ beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
 - **Files**: `core/admin_auth.py` (token create/verify, require_admin),
   `api/admin.py` (`/admin/login`, `/admin/logout`, source CRUD routes),
   `templates/index.html` (login form, token management JS).
+
+## Browser smoke-test note (2026-08-15)
+- Playwright smoke test `e2e_smoke.py` now passes on local SQLite/uvicorn.
+- Important frontend detail: `runCompare()` merges `clinical_profile_episode_ids` from the scientific snapshot (`_searchStates.scientific.activeSearchCtx`) and `rwe_profile_episode_ids` from the RWE snapshot/current context.
+- The active context after switching to RWE may no longer contain the scientific IDs, but the compare payload still includes both via snapshot merge.
+- For reliable smoke tests, force `setSearchMode('scientific')` for the scientific search, `setSearchMode('rwe')` for the RWE search, and route `/pipeline/run` with `max_results=1` to keep the test fast.
+
 - **Tests**: `tests/test_admin_auth.py` (24 tests covering all required
   scenarios: unauthenticated 401, wrong creds 401, correct creds 200 + token,
   bearer-token auth 200, admin tab visibility, no hardcoded creds, Basic Auth

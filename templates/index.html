@@ -2400,10 +2400,10 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
       showBanner('searchBanner', msg, 'success');
       // NEW: collect created RWE profile episode_ids and attach to active search context
       try {
-        const created_ids = (data.results || []).filter(r => r && r.status === 'created').map(r => r.episode_id).filter(Boolean);
-        if (created_ids.length) {
+        const returned_ids = (data.results || []).map(r => r && r.episode_id).filter(Boolean);
+        if (returned_ids.length) {
           _activeSearchCtx = _activeSearchCtx || {};
-          _activeSearchCtx.rwe_profile_episode_ids = (_activeSearchCtx.rwe_profile_episode_ids || []).concat(created_ids);
+          _activeSearchCtx.rwe_profile_episode_ids = (_activeSearchCtx.rwe_profile_episode_ids || []).concat(returned_ids);
         }
       } catch(e) {
         // non-fatal: context sync best-effort
