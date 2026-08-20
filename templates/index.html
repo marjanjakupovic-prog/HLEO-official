@@ -434,6 +434,7 @@
     .cred-dot.ok { background:#10b981; }
     .cred-dot.miss { background:#ef4444; }
   </style>
+  <link rel="stylesheet" href="/static/css/hleo-ui.css">
 </head>
 
 <body class="dark:bg-surface-dark dark:text-slate-200 bg-slate-50 text-slate-800 min-h-screen">
@@ -456,17 +457,17 @@
     <div class="sidebar-section">
       <div class="sidebar-section-title"><span data-i18n="sidebar_group_search">RICERCHE</span><span class="sidebar-section-note">3 streams</span></div>
       <div class="sidebar-nav">
-        <button class="nav-tab active" data-page="search" data-mode="scientific">
+        <button class="nav-tab active" data-page="global" data-mode="global">
+          <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18z"/><path stroke-linecap="round" stroke-linejoin="round" d="M3.6 9h16.8M3.6 15h16.8M12 3.25c2.2 2.34 3.5 5.63 3.5 8.75s-1.3 6.41-3.5 8.75c-2.2-2.34-3.5-5.63-3.5-8.75s1.3-6.41 3.5-8.75z"/></svg>
+          <span data-i18n="nav_search_global">Ricerca Globale</span>
+        </button>
+        <button class="nav-tab" data-page="scientific" data-mode="scientific">
           <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
           <span data-i18n="nav_search_scientific">Ricerca Scientifica</span>
         </button>
-        <button class="nav-tab" data-page="search" data-mode="rwe">
+        <button class="nav-tab" data-page="rwe" data-mode="rwe">
           <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5c-3.038 0-5.5 2.462-5.5 5.5 0 4.25 5.5 9.5 5.5 9.5s5.5-5.25 5.5-9.5c0-3.038-2.462-5.5-5.5-5.5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 10a1.5 1.5 0 110 3 1.5 1.5 0 010-3z"/></svg>
           <span data-i18n="nav_search_rwe">Ricerca RWE</span>
-        </button>
-        <button class="nav-tab" data-page="search" data-mode="global">
-          <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18z"/><path stroke-linecap="round" stroke-linejoin="round" d="M3.6 9h16.8M3.6 15h16.8M12 3.25c2.2 2.34 3.5 5.63 3.5 8.75s-1.3 6.41-3.5 8.75c-2.2-2.34-3.5-5.63-3.5-8.75s1.3-6.41 3.5-8.75z"/></svg>
-          <span data-i18n="nav_search_global">Ricerca Globale</span>
         </button>
       </div>
     </div>
@@ -483,6 +484,10 @@
           <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
           <span data-i18n="nav_experiences_rwe">Esperienze RWE</span>
           <span id="expNavCount" class="nav-pill"></span>
+        </button>
+        <button class="nav-tab" data-page="assistant">
+          <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9z"/></svg>
+          <span data-i18n="nav_assistant">AI Assistant</span>
         </button>
       </div>
     </div>
@@ -553,8 +558,58 @@
     <!-- ════════════════════ PAGES ════════════════════ -->
     <main id="appContent" class="app-content">
 
-<!-- ──────────────────── SEARCH PAGE ──────────────────── -->
-<div id="page-search">
+<!-- ──────────────────── GLOBAL / SCIENTIFIC / RWE PAGES (separate UI areas) ──────────────────── -->
+
+<div id="page-global" class="pt-6">
+  <div class="page-hero dashboard-card">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="dashboard-kicker">HLEO</div>
+        <h1 class="dashboard-title">Ricerca Globale</h1>
+        <p class="dashboard-subtitle mt-1">Accesso immediato a tutte le fonti con AI</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="topbar-chip">Global</span>
+      </div>
+    </div>
+    <div id="globalSearchSlot"></div>
+  </div>
+</div>
+
+<div id="page-scientific" class="hidden pt-6">
+  <div class="page-hero dashboard-card">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="dashboard-kicker">Scientific</div>
+        <h1 class="dashboard-title">Ricerca Scientifica</h1>
+        <p class="dashboard-subtitle mt-1">Esplora la letteratura scientifica peer-reviewed</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="topbar-chip" style="background:#ecfdf5;color:#065f46;">Scientific</span>
+      </div>
+    </div>
+    <div id="scientificSearchSlot"></div>
+  </div>
+</div>
+
+<div id="page-rwe" class="hidden pt-6">
+  <div class="page-hero dashboard-card">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="dashboard-kicker">RWE</div>
+        <h1 class="dashboard-title">Ricerca RWE</h1>
+        <p class="dashboard-subtitle mt-1">Esplora evidenze Real-World da esperienze e dati reali</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="topbar-chip warn">RWE</span>
+      </div>
+    </div>
+    <div id="rweSearchSlot"></div>
+  </div>
+</div>
+
+<!-- Core search UI (shared, moved between page slots at runtime) -->
+<div id="searchCore" class="hidden">
   <div class="page-hero pt-6">
     <div class="dashboard-card">
       <div class="grid lg:grid-cols-[1.25fr_.85fr] gap-5 items-start">
@@ -718,7 +773,7 @@
   <div id="searchResultsGlobal" class="hidden space-y-3"></div>
   <div id="searchResultsRwe" class="hidden space-y-3"></div>
   <div id="searchEmpty" class="hidden text-center py-20 dark:text-slate-500 text-slate-400 text-sm" data-i18n="search_no_results">No results found.</div>
-</div><!-- /page-search -->
+</div>
 
 <!-- ──────────────────── PROFILES PAGE ──────────────────── -->
 <div id="page-profiles" class="hidden pt-8">
@@ -1137,7 +1192,7 @@ const TRANSLATIONS = {
   en: {
     nav_brand:"Clinical Research",
     nav_search:"Search", nav_profiles:"Profiles",
-    nav_experiences:"Experiences", nav_assistant:"AI Assistant", nav_api:"API",
+    nav_experiences:"Experiences", nav_experiences_rwe:"RWE Experiences", nav_assistant:"AI Assistant", nav_api:"API",
     search_hero_title:"Clinical Research Search",
     search_hero_subtitle:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit",
     search_placeholder:"e.g. finasteride alopecia, BRCA1 cancer\u2026",
@@ -1346,12 +1401,29 @@ const TRANSLATIONS = {
     // Misc
     rwe_loading:"Loading\u2026", rwe_partner_label:"Partner",
     rwe_last_contact:"Last contact", rwe_next_followup:"Next follow-up",
+    // Added UI tokens for new pages and sidebar
+    sidebar_group_search: "Search",
+    sidebar_group_data: "Data",
+    sidebar_group_ecosystem: "Ecosystem",
+    sidebar_group_config: "Config",
+    sidebar_system: "SYSTEM",
+    nav_search_global: "Global Search",
+    nav_search_scientific: "Scientific Search",
+    nav_search_rwe: "RWE Search",
+    search_dashboard_kicker: "Search Dashboard",
+    mode_card_scientific_title: "Scientific research",
+    mode_card_scientific_sub: "Relational evidence anchored to scientific literature with synthesis and extraction.",
+    mode_card_rwe_title: "Real-world evidence",
+    mode_card_rwe_sub: "Community reports and adverse-event signals with a dedicated extraction flow.",
+    mode_card_global_title: "Global search",
+    mode_card_global_sub: "Cross-source exploratory search across scientific and community evidence.",
+
     lang_en:"EN", lang_it:"IT",
   },
   it: {
     nav_brand:"Ricerca Clinica",
     nav_search:"Ricerca", nav_profiles:"Profili",
-    nav_experiences:"Esperienze", nav_assistant:"Assistente IA", nav_api:"API",
+    nav_experiences:"Esperienze", nav_experiences_rwe:"Esperienze RWE", nav_assistant:"Assistente IA", nav_api:"API",
     search_hero_title:"Ricerca Clinica",
     search_hero_subtitle:"PubMed \u00b7 Europe PMC \u00b7 ClinicalTrials.gov \u00b7 Reddit",
     search_placeholder:"es. finasteride alopecia, cancro BRCA1\u2026",
@@ -1730,9 +1802,11 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 });
 
 // ─── Page routing ────────────────────────────────────────────────────────────
-const pages = ['search','profiles','experiences','assistant','partners','sources','admin'];
+const pages = ['global','scientific','rwe','profiles','experiences','assistant','partners','sources','admin'];
 const PAGE_META = {
-  search:      { title: 'Clinical Intelligence Platform', subtitle: 'Unified research and evidence workspace' },
+  global:      { title: 'Home / Global Search', subtitle: 'AI Research Assistant — Unified cross-source search' },
+  scientific:  { title: 'Ricerca Scientifica', subtitle: 'Esplora la letteratura scientifica peer-reviewed' },
+  rwe:         { title: 'Ricerca RWE', subtitle: 'Esplora evidenze Real-World da esperienze e dati reali' },
   profiles:    { title: 'Profili Clinici', subtitle: 'Clinical profiles extracted from scientific articles' },
   experiences: { title: 'Esperienze RWE', subtitle: 'RWEProfile and legacy patient experiences' },
   assistant:   { title: 'AI Assistant', subtitle: 'Compare and synthesise retrieved evidence' },
@@ -1751,37 +1825,65 @@ function _setSidebarMobile(open) {
 
 function showPage(name) {
   activePage = name;   // keep global in sync
+
+  // If navigating to a dedicated search page, ensure searchMode matches the page.
+  if (['global','scientific','rwe'].includes(name) && searchMode !== name) {
+    try { setSearchMode(name); } catch(e) { /* best-effort */ }
+  }
+
   pages.forEach(p => {
     const el = document.getElementById(`page-${p}`);
     if (el) el.classList.toggle('hidden', p !== name);
   });
+
+  // Move shared searchCore into the appropriate slot for dedicated search pages
+  if (['global','scientific','rwe'].includes(name)) {
+    try {
+      const core = document.getElementById('searchCore');
+      if (core) {
+        const slotId = name === 'global' ? 'globalSearchSlot' : (name === 'scientific' ? 'scientificSearchSlot' : 'rweSearchSlot');
+        const slot = document.getElementById(slotId);
+        if (slot && core.parentElement !== slot) slot.appendChild(core);
+        // hide the inner hero of the shared core so the page-specific hero is prominent
+        try { const innerHero = core.querySelector('.page-hero'); if (innerHero) innerHero.classList.add('hidden'); } catch(e) {}
+        core.classList.remove('hidden');
+      }
+    } catch(e) { console.warn('move searchCore failed', e); }
+  } else {
+    // hide shared search core when not on search pages
+    const core = document.getElementById('searchCore');
+    if (core) core.classList.add('hidden');
+  }
+
   document.querySelectorAll('.nav-tab').forEach(t => {
-    const isSearchStream = t.dataset.page === 'search' && t.dataset.mode;
-    const activeForTab = isSearchStream ? (name === 'search' && t.dataset.mode === searchMode) : t.dataset.page === name;
+    // support both legacy 'search' tabs and new dedicated search pages
+    const isSearchStream = (t.dataset.page === 'search' || ['global','scientific','rwe'].includes(t.dataset.page)) && t.dataset.mode;
+    const activeForTab = isSearchStream ? ([ 'global','scientific','rwe' ].includes(name) && t.dataset.mode === searchMode) : t.dataset.page === name;
     t.classList.toggle('active', activeForTab);
   });
 
-  const meta = PAGE_META[name] || PAGE_META.search;
+  const meta = PAGE_META[name] || PAGE_META.global;
   const pageTitle = document.getElementById('pageTitle');
   const pageSubtitle = document.getElementById('pageSubtitle');
   if (pageTitle) pageTitle.textContent = meta.title;
   if (pageSubtitle) pageSubtitle.textContent = meta.subtitle;
   const sidebarChip = document.getElementById('sidebarModeChip');
-  const modeLabel = name === 'search' ? (searchMode === 'scientific' ? 'Scientific' : searchMode === 'rwe' ? 'RWE' : 'Global') : meta.title;
+  const modeLabel = ['global','scientific','rwe'].includes(name) ? (name === 'scientific' ? 'Scientific' : name === 'rwe' ? 'RWE' : 'Global') : meta.title;
   if (sidebarChip) sidebarChip.textContent = modeLabel;
   const modeChip = document.getElementById('statusModeChip');
   if (modeChip) modeChip.textContent = modeLabel;
   const backendChip = document.getElementById('statusBackendChip');
-  if (backendChip && name !== 'search') backendChip.textContent = 'Workspace';
-  if (backendChip && name === 'search') backendChip.textContent = 'Backend ready';
+  if (backendChip && !['global','scientific','rwe'].includes(name)) backendChip.textContent = 'Workspace';
+  if (backendChip && ['global','scientific','rwe'].includes(name)) backendChip.textContent = 'Backend ready';
 
-  if (name === 'search') {
-    // Never leave the search skeleton visible when no request is in-flight
+  // For Global page, refresh dashboard; always hide skeleton when no search in progress
+  if (name === 'global') {
     if (!_searchInProgress) {
       document.getElementById('skeleton').classList.add('hidden');
     }
     try { loadDashboard(); } catch (e) {}
   }
+
   // Only (re)fetch profiles when the data is actually stale, not on every navigation
   if (name === 'profiles' && _profilesDirty) loadProfiles();
   if (name === 'experiences') loadExperiences();
@@ -1828,13 +1930,13 @@ let allSearchResults = [];
 let activeFilter = 'all';
 let lastQuery = '';
 // Search mode: 'scientific' (Level 2 relational, default) | 'global' (broad keyword)
-let searchMode = 'scientific';
+let searchMode = 'global';
 // Feature 002: holds the active search context forwarded to the AI assistant
 let _activeSearchCtx         = null;
 let _currentSearchEpisodeIds = null;  // null = no search yet; [] = search run, pipeline pending; [ids] = filtered
 
 // ── Global navigation + loading-state flags ──────────────────────────────────
-let activePage       = 'search';   // tracks the currently visible tab (global, updated by showPage)
+let activePage       = 'global';   // tracks the currently visible tab (global, updated by showPage)
 let _searchInProgress = false;      // true only while a /search fetch is in-flight
 let _profilesDirty    = true;       // true = profiles must be (re)fetched on next navigation to Profiles
 
@@ -1918,14 +2020,19 @@ function buildSearchCard(item) {
     condition: r.metadata?.condition || '',
     language: currentLang,
   })))).replace(/=/g, '');
+
+  // Prepare a per-card RWE payload (base64) so per-card extraction can reuse the same backend
+  const rwePayload = isRWE ? btoa(unescape(encodeURIComponent(JSON.stringify({ title: r.title||'', text: r.text||r.abstract||'', source: type, source_url: r.url||href||'', metadata: r.metadata||{} })))) : null;
+
   return `<article class="result-card rounded-xl border dark:bg-surface-card dark:border-surface-border bg-white border-slate-200 p-5 animate-slide-up" data-source="${type}">
     <div class="flex items-start gap-2 mb-2.5">${badge(color, LABEL[type] || type)}${rweBadge}</div>
     <h3 class="text-sm font-semibold dark:text-slate-100 text-slate-800 leading-snug mb-1.5">${titleHtml}</h3>
     ${abs ? `<p class="text-xs dark:text-slate-400 text-slate-500 line-clamp-2 italic mb-2">${esc(abs)}…</p>` : ''}
-    ${metaParts.length ? `<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs dark:text-slate-500 text-slate-400">${metaParts.join('<span class="opacity-30">·</span>')}</div>` : ''}
+    ${metaParts.length ? `<div class="meta-parts flex flex-wrap gap-x-3 gap-y-1 text-xs dark:text-slate-500 text-slate-400">${metaParts.join('<span class="opacity-30">·</span>')}</div>` : ''}
     <div class="mt-3 flex flex-wrap gap-2">
       <button class="translate-btn" data-card-id="${_cid}" onclick="translateCard(this)">${t('translate_btn')}</button>
       <button class="synth-card-btn px-2.5 py-1 text-xs rounded-lg font-medium text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-500/10 hover:bg-teal-100 dark:hover:bg-teal-500/20 ring-1 ring-inset ring-teal-200 dark:ring-teal-500/30 transition-colors" data-card="${synthData}" onclick="synthesizeCard(this)">${t('synth_card_btn')}</button>
+      ${isRWE ? `<button class="extract-exp-btn px-2.5 py-1 text-xs rounded-lg font-medium text-purple-600 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/10 hover:bg-purple-100 dark:hover:bg-purple-500/20 ring-1 ring-inset ring-purple-200 dark:ring-purple-500/30 transition-colors" data-rwe="${rwePayload}" onclick="extractExperienceFromCard(this)">${t('search_btn_extract_experiences')}</button>` : ''}
     </div>
     <div class="card-translate-output hidden mt-3 pt-3 border-t dark:border-surface-border border-slate-200"></div>
     <div class="card-synthesis-output hidden mt-3 pt-3 border-t dark:border-surface-border border-slate-200"></div>
@@ -2418,7 +2525,11 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
     return;
   }
 
-  // ── Scientific/Global mode: legacy Reddit-only ingestion
+
+
+
+  // end RWE branch
+
   try {
     const res  = await fetch(`/experiences/ingest?q=${encodeURIComponent(lastQuery)}`, {method:'POST'});
     if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -2447,6 +2558,83 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
     btn.disabled = false; lbl.textContent = 'Extract experiences (LLM)';
   }
 });
+
+// UI helper: extract a single RWE item directly from its card (global scope)
+async function extractExperienceFromCard(btn) {
+  if (!btn) return;
+  const lblOrig = btn.textContent;
+  try {
+    btn.disabled = true;
+    btn.textContent = t('search_btn_extract_experiences') + '\u2026';
+    const payload = btn.dataset.rwe;
+    if (!payload) {
+      showBanner('searchBanner', t('search_no_results'), 'error');
+      return;
+    }
+    // decode base64-encoded JSON
+    let rweObj = null;
+    try { rweObj = JSON.parse(decodeURIComponent(escape(atob(payload)))); } catch(e) { rweObj = null; }
+    if (!rweObj) {
+      showBanner('searchBanner', 'Invalid RWE payload', 'error');
+      return;
+    }
+    const item = {
+      source: rweObj.source || (rweObj.metadata && rweObj.metadata.source) || '',
+      source_type: (rweObj.metadata && rweObj.metadata.source_type) || '',
+      evidence_tier: (rweObj.metadata && rweObj.metadata.evidence_tier) || '',
+      collection_method: (rweObj.metadata && rweObj.metadata.collection_method) || '',
+      source_url: rweObj.source_url || rweObj.url || '',
+      external_id: (rweObj.metadata && (rweObj.metadata.external_id || rweObj.metadata.externalId)) || '',
+      title: rweObj.title || '',
+      text: rweObj.text || rweObj.abstract || '',
+      date: (rweObj.metadata && rweObj.metadata.date) || '',
+      language: (rweObj.metadata && rweObj.metadata.language) || currentLang,
+      topic: rweObj.topic || '',
+      treatment: (rweObj.metadata && rweObj.metadata.treatment) || '',
+      condition: (rweObj.metadata && rweObj.metadata.condition) || '',
+      experience_type: (rweObj.metadata && rweObj.metadata.experience_type) || '',
+    };
+
+    const body = {
+      query: _activeSearchCtx?.original_query || lastQuery || '',
+      items: [item],
+    };
+
+    const res = await fetch('/rwe/extract-batch', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    if (data.error) { showBanner('searchBanner', `\u26a0\ufe0f ${esc(data.error)}`, 'warn'); return; }
+    const n = data.experiences_extracted || data.profiles_created || 0;
+    const found = data.rwe_records_found || 0;
+    const skipped = data.skipped || 0;
+    const errors = data.errors || 0;
+    let msg = `\u2705 Estratte <strong>${n}</strong> esperienze da <strong>${found}</strong> record RWE`;
+    if (skipped) msg += `, ${skipped} già esistenti`;
+    if (errors) msg += `, ${errors} errori`;
+    msg += `. <button onclick="showPage('experiences')" class="underline ml-1">Vedi esperienze RWE</button>`;
+    showBanner('searchBanner', msg, 'success');
+    try {
+      const returned_ids = (data.results || []).map(r => r && r.episode_id).filter(Boolean);
+      if (returned_ids.length) {
+        _activeSearchCtx = _activeSearchCtx || {};
+        _activeSearchCtx.rwe_profile_episode_ids = (_activeSearchCtx.rwe_profile_episode_ids || []).concat(returned_ids);
+      }
+    } catch(e){ /* ignore */ }
+    refreshNavCounts();
+    if (activePage === 'experiences') loadExperiences();
+  } catch(err) {
+    showBanner('searchBanner', `Error: ${esc(err.message)}`);
+  } finally {
+    btn.disabled = false;
+    try { btn.textContent = lblOrig; } catch(e) {}
+  }
+}
+
+
 
 // ═══════════════════ PROFILES PAGE ═════════════════════════════════════════
 
@@ -3389,20 +3577,37 @@ function _renderCompare(out, d) {
   const list = (label, arr) => arr.length
     ? `<div class="mb-2"><span class="font-semibold dark:text-slate-300 text-slate-600">${esc(label)}:</span><ul class="list-disc list-inside mt-0.5 space-y-0.5 dark:text-slate-400 text-slate-500">${arr.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></div>`
     : '';
+
+  const sciCol = `
+    <div>
+      <div class="text-xs font-semibold dark:text-slate-300 text-slate-600 mb-1">${esc(t('compare_sci_consensus'))}</div>
+      ${item(t('compare_sci_consensus'), d.scientific_consensus)}
+      ${list(t('compare_agreements'), ag)}
+    </div>`;
+
+  const rweCol = `
+    <div>
+      <div class="text-xs font-semibold dark:text-slate-300 text-slate-600 mb-1">${esc(t('compare_rwe_consensus'))}</div>
+      ${item(t('compare_rwe_consensus'), d.rwe_consensus)}
+      ${list(t('compare_gaps'), gp)}
+    </div>`;
+
   out.innerHTML =
-    `<div class="rounded-lg p-3 dark:bg-surface-hover bg-slate-50 border dark:border-surface-border border-slate-200 text-xs space-y-1">
+    `<div class="rounded-lg p-3 dark:bg-surface-hover bg-slate-50 border dark:border-surface-border border-slate-200 text-xs space-y-2">
       <div class="flex items-center justify-between mb-1.5">
         <span class="font-semibold text-violet-600 dark:text-violet-300">\u2194 ${esc(t('compare_btn'))}</span>
         <span class="dark:text-slate-500 text-slate-400">${d.scientific_count||0} sci · ${d.rwe_count||0} rwe</span>
       </div>
-      ${item(t('compare_sci_consensus'), d.scientific_consensus)}
-      ${item(t('compare_rwe_consensus'), d.rwe_consensus)}
-      ${list(t('compare_agreements'), ag)}
-      ${list(t('compare_divergences'), dv)}
-      ${list(t('compare_gaps'), gp)}
-      ${item(t('compare_quality'), d.evidence_quality_note)}
-      ${item(t('compare_takeaway'), d.practical_takeaway)}
-      ${conf.level ? `<div class="mt-2 pt-2 border-t dark:border-surface-border border-slate-200"><span class="font-semibold dark:text-slate-300 text-slate-600">${esc(t('compare_confidence'))}:</span> <span class="dark:text-slate-400 text-slate-500">${esc(conf.level)}${conf.rationale ? ' — ' + esc(conf.rationale) : ''}</span></div>` : ''}
+      <div class="compare-two-col">
+        ${sciCol}
+        ${rweCol}
+      </div>
+      <div class="mt-3">
+        ${list(t('compare_divergences'), dv)}
+        ${item(t('compare_quality'), d.evidence_quality_note)}
+        ${item(t('compare_takeaway'), d.practical_takeaway)}
+        ${conf.level ? `<div class="mt-2 pt-2 border-t dark:border-surface-border border-slate-200"><span class="font-semibold dark:text-slate-300 text-slate-600">${esc(t('compare_confidence'))}:</span> <span class="dark:text-slate-400 text-slate-500">${esc(conf.level)}${conf.rationale ? ' — ' + esc(conf.rationale) : ''}</span></div>` : ''}
+      </div>
     </div>`;
 }
 
@@ -4370,6 +4575,9 @@ try { loadDashboard(); } catch(e) { /* ignore init errors */ }
   } else if (_pageParam === 'admin' && _adminAvail !== 'disabled') {
     showPage('admin');
     history.replaceState(null, '', location.pathname);
+  } else {
+    // default: show the configured active page (global)
+    try { showPage(activePage); } catch(e) { /* ignore */ }
   }
 })();
 </script>
