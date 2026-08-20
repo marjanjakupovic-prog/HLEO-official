@@ -260,10 +260,76 @@ def search(q: str = Query(..., description="Search query"),
                 status_code=503,
                 detail="Scientific mode could not extract a clinical relation. Try rephrasing or use Global mode.",
             )
-        pubmed         = [_to_dict(a) for a in rel_out["pubmed"]]
-        europepmc      = [_to_dict(a) for a in rel_out["europepmc"]]
-        clinicaltrials = [_to_dict(a) for a in rel_out["clinicaltrials"]]
+        # Convert raw items into dictionaries reliably. _to_dict may return a string
+        # for certain lightweight objects (e.g. SimpleNamespace used in tests). In
+        # that case, fall back to the original item's __dict__ when available.
+        raw_pubmed = rel_out["pubmed"]
+        pubmed = []
+        for item in raw_pubmed:
+            d = _to_dict(item)
+            if isinstance(d, str) and hasattr(item, "__dict__"):
+                try:
+                    d = dict(vars(item))
+                except Exception:
+                    d = {"title": str(item)}
+            pubmed.append(d)
+
+        raw_europepmc = rel_out["europepmc"]
+        europepmc = []
+        for item in raw_europepmc:
+            d = _to_dict(item)
+            if isinstance(d, str) and hasattr(item, "__dict__"):
+                try:
+                    d = dict(vars(item))
+                except Exception:
+                    d = {}
+            europepmc.append(d)
+
+        raw_clinicaltrials = rel_out["clinicaltrials"]
+        clinicaltrials = []
+        for item in raw_clinicaltrials:
+            d = _to_dict(item)
+            if isinstance(d, str) and hasattr(item, "__dict__"):
+                try:
+                    d = dict(vars(item))
+                except Exception:
+                    d = {}
+            clinicaltrials.append(d)
+
         reddit_raw     = [_to_dict(p) for p in rel_out["reddit"]]
+
+        # Normalize fields so clients/tests receive strings instead of nulls.
+        # Specifically: when PMID is present but url is null, build the canonical
+        # PubMed URL. Also ensure doi is an empty string when missing (do not invent).
+        for a in pubmed:
+            if not isinstance(a, dict):
+                continue
+            # Ensure url is a string; derive from pmid when available
+            if a.get("url") is None or a.get("url") == "":
+                pmid = a.get("pmid") or a.get("external_id") or ""
+                a["url"] = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
+            if a.get("doi") is None:
+                a["doi"] = ""
+
+        for a in europepmc:
+            if not isinstance(a, dict):
+                continue
+            # If doi present but url missing, build DOI link; otherwise ensure empty string
+            if a.get("url") is None or a.get("url") == "":
+                doi = a.get("doi") or ""
+                a["url"] = f"https://doi.org/{doi}" if doi else ""
+            if a.get("doi") is None:
+                a["doi"] = ""
+
+        for a in clinicaltrials:
+            if not isinstance(a, dict):
+                continue
+            # Use nct_id from meta or nct_id field to build clinicaltrials.gov URL
+            if a.get("url") is None or a.get("url") == "":
+                nct = (a.get("meta") or {}).get("nct_id") or a.get("nct_id") or ""
+                a["url"] = f"https://clinicaltrials.gov/study/{nct}" if nct else ""
+            if a.get("doi") is None:
+                a["doi"] = ""
         rel = rel_out["relation"]
         orch_dict = {
             "original_query":      q,
