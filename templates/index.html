@@ -1844,8 +1844,11 @@ function showPage(name) {
         const slotId = name === 'global' ? 'globalSearchSlot' : (name === 'scientific' ? 'scientificSearchSlot' : 'rweSearchSlot');
         const slot = document.getElementById(slotId);
         if (slot && core.parentElement !== slot) slot.appendChild(core);
-        // hide the inner hero of the shared core so the page-specific hero is prominent
-        try { const innerHero = core.querySelector('.page-hero'); if (innerHero) innerHero.classList.add('hidden'); } catch(e) {}
+        // hide the header inside the shared core (keep search tabs/form visible)
+        try {
+          const kicker = core.querySelector('.dashboard-kicker');
+          if (kicker && kicker.parentElement) kicker.parentElement.classList.add('hidden');
+        } catch(e) {}
         core.classList.remove('hidden');
       }
     } catch(e) { console.warn('move searchCore failed', e); }
