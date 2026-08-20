@@ -808,8 +808,9 @@ class RWEBatchExtractItem(BaseModel):
 
     These are the REAL items returned by /rwe/search — not a re-collection
     of Reddit. The backend extracts a structured profile from each and
-    persists it as an RWEProfile (and, for community_forum sources, also
-    surfaces it on the Experiences page).
+    returns the extracted profiles in the response. Persistence of RWEProfile
+    rows is an explicit operation and is NOT performed automatically by this
+    endpoint.
     All fields are Optional so that null values from /rwe/search are accepted.
     """
     source: Optional[str] = ""
@@ -844,10 +845,11 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
     RWE search.
 
     Does NOT re-collect Reddit. Accepts the items returned by /rwe/search and
-    runs the RWE profile extractor on each, persisting RWEProfile rows with
-    full provenance. Returns a status report (found/extracted/updated/skipped/
-    errors). When no items are provided, returns a clear message and does NOT
-    simulate any extraction.
+    runs the RWE profile extractor on each, returning a status report
+    (found/extracted/updated/skipped/errors). This endpoint does NOT persist
+    RWEProfile rows automatically; persistence must be explicit when required.
+    When no items are provided, returns a clear message and does NOT simulate
+    any extraction.
     """
     import os, hashlib
 
@@ -2051,23 +2053,61 @@ def assistant_compare(body: CompareRequest, db: Session = Depends(get_db)):
     # Under the new architecture we DO NOT fetch profiles from the DB; the frontend
     # must supply the relevant scientific_articles and rwe_evidence arrays.
     sci_lines = []
-    for i, a in enumerate(body.scientific_articles[:10]):
-        ident = a.pmid or a.doi or a.nct_id or a.url or ""
-        sci_lines.append(
-            f"[S{i}] {a.source} | {ident} — {a.title}\n"
-            f"    {(a.abstract or '')[:600]}"
-        )
+    if body.scientific_articles:
+        for i, a in enumerate(body.scientific_articles[:10]):
+            ident = a.pmid or a.doi or a.nct_id or a.url or ""
+            sci_lines.append(
+                f"[S{i}] {a.source} | {ident} — {a.title}\n"
+                f"    {(a.abstract or '')[:600]}"
+            )
+        cp_count = len(body.scientific_articles or [])
+    else:
+        # Try to load clinical profiles from DB if episode ids are provided
+        cp_count = 0
+        eps = getattr(body, 'clinical_profile_episode_ids', []) or []
+        if eps:
+            cp_rows = db.execute(
+                select(ClinicalProfile).where(ClinicalProfile.episode_id.in_(eps))
+            ).scalars().all()
+            for i, cp in enumerate(cp_rows[:10]):
+                vp = cp.validation_payload or {}
+                payload = cp.extracted_payload or {}
+                title = vp.get('title', '')
+                diag = ", ".join(payload.get('diagnosis', [])[:3])
+                treats = ", ".join(payload.get('treatments', [])[:4])
+                snippet = (
+                    f"[S{i}] clinical_profile | {cp.episode_id} — {title}\n"
+                    f"    Diagnosis: {diag}\n"
+                    f"    Treatments: {treats}"
+                )
+                sci_lines.append(snippet)
+            cp_count = len(cp_rows)
+
     sci_block = "\n".join(sci_lines) or "(no scientific articles)"
-    cp_count = len(body.scientific_articles or [])
 
     rwe_lines = []
-    for i, r in enumerate(body.rwe_evidence[:10]):
-        rwe_lines.append(
-            f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
-            f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
-        )
+    if body.rwe_evidence:
+        for i, r in enumerate(body.rwe_evidence[:10]):
+            rwe_lines.append(
+                f"[R{i}] {r.source} ({r.evidence_tier}) | {r.external_id or ''} — {r.title}\n"
+                f"    treatment={r.treatment or '?'}; {(r.text or '')[:500]}"
+            )
+        rp_count = len(body.rwe_evidence or [])
+    else:
+        rp_count = 0
+        eps = getattr(body, 'rwe_profile_episode_ids', []) or []
+        if eps:
+            rp_rows = db.execute(
+                select(RWEProfile).where(RWEProfile.episode_id.in_(eps))
+            ).scalars().all()
+            for i, rp in enumerate(rp_rows[:10]):
+                rwe_lines.append(
+                    f"[R{i}] {rp.source} ({rp.evidence_tier}) | {rp.external_id or ''} — {rp.title}\n"
+                    f"    treatment={rp.treatment or '?'}; {(rp.raw_text or '')[:500]}"
+                )
+            rp_count = len(rp_rows)
+
     rwe_block = "\n".join(rwe_lines) or "(no RWE items)"
-    rp_count = len(body.rwe_evidence or [])
 
     _LANG_MAP = {
         "it": "Italian", "en": "English", "fr": "French",
