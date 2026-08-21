@@ -131,15 +131,62 @@ def _article_from_clinicaltrials(item: Any) -> dict:
     }
 
 
+def _article_from_generic(item: Any, source_key: Optional[str] = None) -> dict:
+    """Fallback generic mapper from SearchResult-like object to API article dict."""
+    title = getattr(item, 'title', '') or (item.get('title') if isinstance(item, dict) else '')
+    abstract = getattr(item, 'abstract', '') or (item.get('abstract') if isinstance(item, dict) else '')
+    url = getattr(item, 'url', '') or (item.get('url') if isinstance(item, dict) else '')
+    doi = getattr(item, 'doi', None) or (item.get('doi') if isinstance(item, dict) else None)
+    pmid = getattr(item, 'pmid', None) or (item.get('pmid') if isinstance(item, dict) else None)
+    metadata = getattr(item, 'metadata', None) or (item if isinstance(item, dict) else {})
+    # episode id fallback
+    if pmid:
+        episode_id = f"pubmed-{pmid}"
+    elif doi:
+        episode_id = f"doi-{str(doi).replace('/', '-') }"
+    else:
+        # try a stable key from metadata or url
+        if isinstance(metadata, dict) and metadata.get('id'):
+            episode_id = f"item-{metadata.get('id')}"
+        elif url:
+            episode_id = f"url-{hash(url) & 0xffffffff}"
+        else:
+            episode_id = f"{source_key or 'generic'}-{abs(hash(title)) % (10**8)}"
+    return {
+        "source": source_key or (metadata.get('source') if isinstance(metadata, dict) else 'generic'),
+        "episode_id": episode_id,
+        "title": title,
+        "abstract": abstract or "",
+        "url": url,
+        "external_id": pmid or doi or "",
+        "journal": (metadata or {}).get('journal', ''),
+        "pub_year": str((getattr(item, 'year', '') or (metadata or {}).get('year', ''))),
+        "meta": metadata or {},
+    }
+
+
 def _articles_from_raw(raw: dict) -> list[dict]:
-    """Build the article list from a HLEOPipeline.collect() result (global mode)."""
+    """Build the article list from a HLEOPipeline.collect() result (global mode).
+
+    Supports dynamic keys returned by HLEOPipeline.collect(). Uses known builders
+    for pubmed/europepmc/clinicaltrials and a generic mapper for others.
+    """
     articles: list[dict] = []
-    for item in raw["pubmed"]:
-        articles.append(_article_from_pubmed(item))
-    for item in raw["europepmc"]:
-        articles.append(_article_from_europepmc(item))
-    for item in raw["clinicaltrials"]:
-        articles.append(_article_from_clinicaltrials(item))
+    builders = {
+        'pubmed': _article_from_pubmed,
+        'europepmc': _article_from_europepmc,
+        'clinicaltrials': _article_from_clinicaltrials,
+    }
+    for key, items in raw.items():
+        if key == 'reddit' or not items:
+            continue
+        builder = builders.get(key)
+        if builder:
+            for item in items:
+                articles.append(builder(item))
+        else:
+            for item in items:
+                articles.append(_article_from_generic(item, source_key=key))
     return articles
 
 
@@ -151,16 +198,23 @@ def _articles_from_relational(rel_out: dict, only_relevant: bool = True) -> list
     carried into validation_payload so each profile stays anchored to the relation.
     """
     articles: list[dict] = []
-    for source_key, builder in (
-        ("pubmed", _article_from_pubmed),
-        ("europepmc", _article_from_europepmc),
-        ("clinicaltrials", _article_from_clinicaltrials),
-    ):
-        for item in rel_out.get(source_key, []):
+    builders = {
+        'pubmed': _article_from_pubmed,
+        'europepmc': _article_from_europepmc,
+        'clinicaltrials': _article_from_clinicaltrials,
+    }
+    for source_key, items in (rel_out or {}).items():
+        if source_key is None or not items:
+            continue
+        builder = builders.get(source_key)
+        for item in items:
             label = (getattr(item, "metadata", None) or {}).get("relevance_label")
             if only_relevant and label != "relevant":
                 continue
-            art = builder(item)
+            if builder:
+                art = builder(item)
+            else:
+                art = _article_from_generic(item, source_key=source_key)
             md = getattr(item, "metadata", None) or {}
             art["relevance_label"]  = md.get("relevance_label")
             art["relevance_score"]  = md.get("relevance_score")
@@ -359,24 +413,35 @@ def search(q: str = Query(..., description="Search query"),
     pipeline = HLEOPipeline()
     raw = pipeline.collect(orch.search_query)
 
-    pubmed         = [_to_dict(a) for a in raw["pubmed"]]
-    europepmc      = [_to_dict(a) for a in raw["europepmc"]]
-    clinicaltrials = [_to_dict(a) for a in raw["clinicaltrials"]]
-    reddit_raw     = [_to_dict(p) for p in raw["reddit"]]
+    # Convert raw results (which can contain dynamic keys) into plain dicts
+    converted: dict = {}
+    for key, items in (raw or {}).items():
+        converted[key] = [_to_dict(a) for a in (items or [])]
 
-    return {
-        "query":          q,
-        "orchestration":  orch.to_dict(),
-        "llm_extraction": pipeline.extractor.client is not None,
-        "totals": {
-            "pubmed":         len(pubmed),
-            "europepmc":      len(europepmc),
-            "clinicaltrials": len(clinicaltrials),
-            "reddit":         len(reddit_raw),
-        },
-        "pubmed": pubmed, "europepmc": europepmc,
-        "clinicaltrials": clinicaltrials, "reddit": reddit_raw,
+    # Ensure legacy keys are present for backward compatibility
+    for k in ("pubmed", "europepmc", "clinicaltrials", "reddit"):
+        if k not in converted:
+            converted[k] = []
+
+    totals = {
+        "pubmed": len(converted.get("pubmed", [])),
+        "europepmc": len(converted.get("europepmc", [])),
+        "clinicaltrials": len(converted.get("clinicaltrials", [])),
+        "reddit": len(converted.get("reddit", [])),
     }
+
+    resp = {
+        "query": q,
+        "orchestration": orch.to_dict(),
+        "llm_extraction": pipeline.extractor.client is not None,
+        "totals": totals,
+    }
+
+    # Attach all per-source arrays to the response (including dynamic ones)
+    for key, items in converted.items():
+        resp[key] = items
+
+    return resp
 
 
 # ── Article pipeline ──────────────────────────────────────────────────────────

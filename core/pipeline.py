@@ -40,19 +40,72 @@ class HLEOPipeline:
         4. Return the cleaned per-source dict — identical structure to before,
            but with cross-source duplicates removed (winning copy only retained).
         """
-        reddit_posts       = self.collector.search(query, limit=10)
-        pubmed_articles    = self.pubmed.search(query, limit=20)
-        europepmc_articles = self.europepmc.search(query, limit=15)
-        clinical_trials    = self.clinicaltrials.search(query, limit=10)
+        # Dynamic discovery of scientific sources via SourceRegistry (if present),
+        # otherwise fall back to the legacy builtin collectors.
+        from core.database import SessionLocal
+        from core.models import SourceRegistry
+        from sqlalchemy import select
 
-        raw = {
-            "reddit":         reddit_posts,
-            "pubmed":         pubmed_articles,
-            "europepmc":      europepmc_articles,
-            "clinicaltrials": clinical_trials,
+        registry_map: Dict[str, SourceRegistry] = {}
+        raw: dict = {}
+
+        # Collector map for known built-in collectors
+        collector_map = {
+            "pubmed": self.pubmed,
+            "europepmc": self.europepmc,
+            "clinicaltrials": self.clinicaltrials,
         }
 
-        # ── Cross-source deduplication ────────────────────────────────────────
+        # Discover active scientific sources from registry
+        with SessionLocal() as db:
+            rows = db.execute(
+                select(SourceRegistry).where(
+                    SourceRegistry.category == "scientific",
+                    SourceRegistry.status == "active",
+                )
+            ).scalars().all()
+        if rows:
+            for r in rows:
+                registry_map[r.source_id] = r
+                collector_key = r.runtime_collector or r.source_id
+                # If runtime_collector maps to a known collector, call it; otherwise
+                # if it's a generic REST configuration, instantiate GenericRESTCollector
+                if collector_key in collector_map:
+                    try:
+                        raw[r.source_id] = collector_map[collector_key].search(query, limit=20 if collector_key=="pubmed" else (15 if collector_key=="europepmc" else 10))
+                    except Exception:
+                        logger.exception("Collector %s failed for query %s", collector_key, query)
+                        raw[r.source_id] = []
+                elif collector_key == "generic_rest":
+                    try:
+                        from collectors.generic_rest import GenericRESTCollector
+                        gen = GenericRESTCollector(r.connection_spec or {}, source_id=r.source_id, category=r.category)
+                        raw[r.source_id] = gen.search(query, limit=10)
+                    except Exception:
+                        logger.exception("GenericRESTCollector failed for %s", r.source_id)
+                        raw[r.source_id] = []
+                else:
+                    # Unknown runtime_collector — skip
+                    logger.warning("Unknown runtime_collector '%s' for source '%s'", collector_key, r.source_id)
+                    raw[r.source_id] = []
+        else:
+            # legacy behaviour
+            reddit_posts = self.collector.search(query, limit=10)
+            pubmed_articles = self.pubmed.search(query, limit=20)
+            europepmc_articles = self.europepmc.search(query, limit=15)
+            clinical_trials = self.clinicaltrials.search(query, limit=10)
+            raw = {
+                "reddit": reddit_posts,
+                "pubmed": pubmed_articles,
+                "europepmc": europepmc_articles,
+                "clinicaltrials": clinical_trials,
+            }
+
+        # include reddit if not already present
+        if "reddit" not in raw:
+            raw["reddit"] = self.collector.search(query, limit=10)
+
+        # ── Cross-source deduplication (works over dynamic set of scientific keys) ──
         deduped, stats = _aggregator.deduplicate_across_sources(raw)
 
         logger.info(
@@ -70,9 +123,6 @@ class HLEOPipeline:
                 )
 
         # ── Clinical re-ranking ───────────────────────────────────────────────
-        # Score every scientific article with clinical_rank() and sort each
-        # per-source list by score descending.  Reddit is never touched.
-        # This is the only mutation between dedup and returning the result dict.
         from core.ranker import rank_articles
         rank_articles(deduped)
 
@@ -84,34 +134,32 @@ class HLEOPipeline:
 
         data = self.collect(query)
 
-        posts = data["reddit"]
-        articles = data["pubmed"]
-        europe_articles = data["europepmc"]
-        clinical_trials = data["clinicaltrials"]
+        posts = data.get("reddit", [])
 
         logger.info(f"Post Reddit: {len(posts)}")
-        logger.info(f"Articoli PubMed: {len(articles)}")
 
-        if (
-            not posts
-            and not articles
-            and not europe_articles
-            and not clinical_trials
-        ):
+        # Build unified results list from all non-reddit keys in the collected data.
+        results = []
+        has_scientific = False
+        for k, items in data.items():
+            if k == "reddit":
+                continue
+            if not items:
+                continue
+            has_scientific = True
+            if k == "clinicaltrials":
+                for trial in items:
+                    results.append({"type": "clinicaltrials", "trial": trial})
+            else:
+                # treat everything else as an article list
+                for article in items:
+                    results.append({"type": k, "article": article})
+
+        if not posts and not has_scientific:
             logger.warning("Nessun dato trovato")
             return []
 
-        results = []
-
-        for article in articles:
-            results.append({"type": "pubmed", "article": article})
-
-        for article in europe_articles:
-            results.append({"type": "europepmc", "article": article})
-
-        for trial in clinical_trials:
-            results.append({"type": "clinicaltrials", "trial": trial})
-
+        # Process reddit posts (extraction) as before
         for post in posts:
             try:
                 raw_sources = self.fetcher.fetch(post.url)

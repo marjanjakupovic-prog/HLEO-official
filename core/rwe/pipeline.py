@@ -401,65 +401,101 @@ class RWEPipeline:
         """
         # ── 1. Build the query plan (detect → prepare → translate → expand) ──
         plan = self._engine.plan(query)
-        sources = sources or [
-            "reddit", "openfda_faers", "calvizie",
-            "hairlosstalk", "hairlossexperiences", "maladiesrares",
-        ]
 
-        per_source_limits = {
+        # Resolve effective sources: if caller provided an explicit list, prefer it;
+        # otherwise read active RWE sources from SourceRegistry. Fall back to legacy
+        # default list if no registry rows are present.
+        from core.database import SessionLocal
+        from core.models import SourceRegistry
+        from sqlalchemy import select
+
+        registry_map: Dict[str, SourceRegistry] = {}
+        effective_sources: List[str] = []
+
+        if sources:
+            # normalize provided list and try to resolve registry rows for them
+            requested = [s.strip() for s in sources if s and s.strip()]
+            if requested:
+                with SessionLocal() as db:
+                    rows = db.execute(select(SourceRegistry).where(SourceRegistry.source_id.in_(requested))).scalars().all()
+                rows_by_id = {r.source_id: r for r in rows}
+                for s in requested:
+                    if s in rows_by_id:
+                        registry_map[s] = rows_by_id[s]
+                        effective_sources.append(s)
+                    else:
+                        # allow direct collector keys (legacy) to be passed through
+                        effective_sources.append(s)
+        else:
+            # discover active RWE sources from the registry
+            with SessionLocal() as db:
+                rows = db.execute(
+                    select(SourceRegistry).where(
+                        SourceRegistry.category == "rwe_experience",
+                        SourceRegistry.status == "active",
+                    )
+                ).scalars().all()
+            if rows:
+                for r in rows:
+                    registry_map[r.source_id] = r
+                    effective_sources.append(r.source_id)
+            else:
+                effective_sources = [
+                    "reddit", "openfda_faers", "calvizie",
+                    "hairlosstalk", "hairlossexperiences", "maladiesrares",
+                ]
+
+        per_source_limits = {s: limit for s in effective_sources}
+        # ensure default caps for legacy keys if present
+        per_source_limits.update({
             "reddit": limit,
             "openfda_faers": limit,
             "calvizie": limit,
             "hairlosstalk": limit,
             "hairlossexperiences": limit,
             "maladiesrares": limit,
-        }
+        })
 
         all_items: List[RWEItem] = []
         source_status: dict = {}
 
-        if "reddit" in sources:
-            items, status = self._collect_source(
-                "reddit", self.reddit, plan, per_source_limits["reddit"]
-            )
-            source_status["reddit"] = status
-            all_items.extend(items)
+        # Collector instance map for known collectors
+        collector_map = {
+            "reddit": self.reddit,
+            "openfda_faers": self.openfda,
+            "calvizie": self.calvizie,
+            "hairlosstalk": self.hairlosstalk,
+            "hairlossexperiences": self.hairlossexperiences,
+            "maladiesrares": self.maladiesrares,
+        }
 
-        if "openfda_faers" in sources:
-            items, status = self._collect_source(
-                "openfda_faers", self.openfda, plan, per_source_limits["openfda_faers"]
-            )
-            source_status["openfda_faers"] = status
-            all_items.extend(items)
+        for src in effective_sources:
+            row = registry_map.get(src)
+            collector_key = (row.runtime_collector if row and row.runtime_collector else src)
+            collector = collector_map.get(collector_key)
+            # If this is a generic REST-configured source, instantiate GenericRESTCollector
+            if collector_key == "generic_rest" and row:
+                try:
+                    from collectors.generic_rest import GenericRESTCollector
+                    collector = GenericRESTCollector(row.connection_spec or {}, source_id=row.source_id, category=row.category)
+                except Exception as exc:
+                    logger.exception("Failed to instantiate GenericRESTCollector for %s: %s", src, exc)
+                    source_status[src] = "no_collector"
+                    continue
 
-        if "calvizie" in sources:
-            items, status = self._collect_source(
-                "calvizie", self.calvizie, plan, per_source_limits["calvizie"]
-            )
-            source_status["calvizie"] = status
-            all_items.extend(items)
+            if not collector:
+                source_status[src] = "no_collector"
+                continue
 
-        if "hairlosstalk" in sources:
-            items, status = self._collect_source(
-                "hairlosstalk", self.hairlosstalk, plan, per_source_limits["hairlosstalk"]
-            )
-            source_status["hairlosstalk"] = status
-            all_items.extend(items)
-
-        if "hairlossexperiences" in sources:
-            items, status = self._collect_source(
-                "hairlossexperiences", self.hairlossexperiences,
-                plan, per_source_limits["hairlossexperiences"],
-            )
-            source_status["hairlossexperiences"] = status
-            all_items.extend(items)
-
-        if "maladiesrares" in sources:
-            items, status = self._collect_source(
-                "maladiesrares", self.maladiesrares, plan, per_source_limits["maladiesrares"]
-            )
-            source_status["maladiesrares"] = status
-            all_items.extend(items)
+            try:
+                items, status = self._collect_source(src, collector, plan, per_source_limits.get(src, limit))
+                source_status[src] = status
+                all_items.extend(items)
+            except Exception as exc:
+                logger.exception("RWE collector failed for %s: %s", src, exc)
+                source_status[src] = "network_error"
+                # continue with other sources
+                continue
 
         # ── 2. Deduplicate across (query × source), keep best matched_query ──
         before = len(all_items)

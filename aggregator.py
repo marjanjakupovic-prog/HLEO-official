@@ -166,7 +166,8 @@ class HLEOAggregator:
             stats            — {"retrieved": int, "removed": int, "unique": int,
                                 "duplicate_keys": [(key, loser_source, winner_source), ...]}
         """
-        scientific_keys = ["pubmed", "europepmc", "clinicaltrials"]
+        # derive scientific keys dynamically from the provided sources dict (exclude reddit)
+        scientific_keys = [k for k in sources.keys() if k != 'reddit']
 
         # Tag each article with its source name so we can rebuild per-source lists
         tagged: list[tuple[str, object]] = []

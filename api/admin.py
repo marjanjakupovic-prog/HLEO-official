@@ -220,6 +220,7 @@ class SourceUpdate(BaseModel):
     authorization_status: Optional[str] = None
     requires_credentials: Optional[bool] = None
     credentials_env_vars: Optional[List[str]] = None
+    connection_spec: Optional[dict] = None
     evidence_level: Optional[str] = None
     geographic_scope: Optional[str] = None
     language_codes: Optional[List[str]] = None
@@ -240,6 +241,7 @@ class SourceCreate(BaseModel):
     evidence_level: Optional[str] = "anecdotal"
     requires_credentials: bool = False
     credentials_env_vars: List[str] = []
+    connection_spec: Optional[dict] = None
     geographic_scope: Optional[str] = "global"
     language_codes: List[str] = ["en"]
 
@@ -358,6 +360,7 @@ def create_source(
         evidence_level=body.evidence_level,
         requires_credentials=body.requires_credentials,
         credentials_env_vars=body.credentials_env_vars,
+        connection_spec=body.connection_spec,
         geographic_scope=body.geographic_scope,
         language_codes=body.language_codes,
         status="active",
@@ -457,7 +460,25 @@ def test_source_connection(
             res = OpenFDACollector().search(probe_query, limit=1)
             result["reachable"] = True
             result["items_returned"] = len(res) if isinstance(res, list) else (res.get("items", []) if isinstance(res, dict) else 0)
+        elif collector_key == "generic_rest":
+            # Generic REST collector configured via connection_spec
+            from collectors.generic_rest import GenericRESTCollector
+            gen = GenericRESTCollector(row.connection_spec or {}, source_id=row.source_id, category=row.category)
+            if row.category == "rwe_experience":
+                items, st, reason = gen.search_with_status(probe_query, limit=1)
+                result["reachable"] = (st == "ok")
+                result["items_returned"] = len(items) if isinstance(items, list) else 0
+                if st != "ok":
+                    result["error"] = reason
+            else:
+                try:
+                    items = gen.search(probe_query, limit=1)
+                    result["reachable"] = True
+                    result["items_returned"] = len(items)
+                except Exception as exc:
+                    result["error"] = str(exc)
         elif collector_key == "calvizie":
+
             from core.rwe.calvizie_collector import CalvizieCollector
             items = CalvizieCollector().search_with_status(probe_query, limit=1)
             result["reachable"] = bool(items and items[0])
