@@ -772,6 +772,8 @@
   <div id="searchResults" class="space-y-3"></div>
   <div id="searchResultsGlobal" class="hidden space-y-3"></div>
   <div id="searchResultsRwe" class="hidden space-y-3"></div>
+  <div id="searchExpandControls" class="mt-4"></div>
+
   <div id="searchEmpty" class="hidden text-center py-20 dark:text-slate-500 text-slate-400 text-sm" data-i18n="search_no_results">No results found.</div>
 </div>
 
@@ -1937,6 +1939,10 @@ let searchMode = 'global';
 // Feature 002: holds the active search context forwarded to the AI assistant
 let _activeSearchCtx         = null;
 let _currentSearchEpisodeIds = null;  // null = no search yet; [] = search run, pipeline pending; [ids] = filtered
+	// Temporary client-side cache for recently extracted (ephemeral) profiles/experiences
+	window._ephemeralClinicalProfiles = window._ephemeralClinicalProfiles || {};
+	window._ephemeralRweProfiles = window._ephemeralRweProfiles || {};
+	
 
 // ── Global navigation + loading-state flags ──────────────────────────────────
 let activePage       = 'global';   // tracks the currently visible tab (global, updated by showPage)
@@ -2056,7 +2062,45 @@ function renderSearch() {
   const filtered  = activeFilter==='all' ? allSearchResults : allSearchResults.filter(r=>r.type===activeFilter);
   if (!filtered.length) { if (container) container.innerHTML=''; empty.classList.remove('hidden'); return; }
   empty.classList.add('hidden');
-  if (container) container.innerHTML = filtered.map(buildSearchCard).join('');
+
+  // Progressive reveal: show results progressively (30 -> +20 -> +30 -> cap 80)
+  _searchStates[searchMode] = _searchStates[searchMode] || {};
+  // Reset visibleCount on new query
+  if (typeof _searchStates[searchMode].visibleCount === 'undefined' || _searchStates[searchMode].lastQuery !== lastQuery) {
+    _searchStates[searchMode].visibleCount = Math.min(30, filtered.length);
+    _searchStates[searchMode].lastQuery = lastQuery;
+  }
+  let visible = _searchStates[searchMode].visibleCount || 30;
+  if (visible > 80) visible = 80;
+  const toShow = Math.min(filtered.length, visible);
+  if (container) container.innerHTML = filtered.slice(0, toShow).map(buildSearchCard).join('');
+
+  // Expand controls (do not trigger new searches; show more cached results)
+  const expandEl = document.getElementById('searchExpandControls');
+  if (expandEl) {
+    expandEl.innerHTML = '';
+    if (filtered.length > toShow && toShow < 80) {
+      let nextVisible;
+      let extra;
+      if (toShow <= 30) {
+        nextVisible = Math.min(50, filtered.length, 80);
+      } else if (toShow <= 50) {
+        nextVisible = Math.min(80, filtered.length);
+      } else {
+        nextVisible = Math.min(80, filtered.length);
+      }
+      extra = Math.max(0, nextVisible - toShow);
+      const btnHtml = `<div class="mt-4 text-center"><button id="expandSearchBtn" class="px-4 py-2 rounded bg-slate-800 text-white text-sm">Espandi ricerca — mostra altri ${extra} risultati</button></div>`;
+      expandEl.innerHTML = btnHtml;
+      const btnExp = document.getElementById('expandSearchBtn');
+      if (btnExp) {
+        btnExp.addEventListener('click', () => {
+          _searchStates[searchMode].visibleCount = nextVisible;
+          renderSearch();
+        });
+      }
+    }
+  }
 }
 
 document.querySelectorAll('.filter-btn').forEach(btn =>
@@ -2088,7 +2132,7 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
   // ── RWE mode: separate pipeline (Reddit + openFDA FAERS) ──────────────────
   if (searchMode === 'rwe') {
     try {
-      const res  = await fetch(`/rwe/search?q=${encodeURIComponent(q)}`);
+      const res  = await fetch(`/rwe/search?q=${encodeURIComponent(q)}&limit=50`);
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
       // Render RWE items (normalized shape: {source, source_type, evidence_tier, ...})
@@ -2280,6 +2324,17 @@ document.getElementById('runPipelineBtn').addEventListener('click', async () => 
     if (err) msg += `, ${err} ${t('banner_errors')}`;
     msg += `. <button onclick="showPage('profiles')" class="underline ml-1">${t('banner_view_profiles')}</button>`;
     showBanner('searchBanner', msg, 'success');
+	    // Cache ephemeral clinical profiles so they can be shown immediately in the UI
+	    try {
+	      window._ephemeralClinicalProfiles = window._ephemeralClinicalProfiles || {};
+	      (data.results || []).forEach(r => {
+	        if (r && r.episode_id) {
+	          window._ephemeralClinicalProfiles[r.episode_id] = r;
+	        }
+	      });
+	    } catch(e) { /* non-fatal */ }
+	
+
     // Scope profiles view to this search only; mark dirty so nav refreshes it
     _currentSearchEpisodeIds = data.episode_ids || [];
     // NEW: persist clinical profile episode ids in the active search context
@@ -2508,6 +2563,28 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
       if (errors) msg += `, ${errors} errori`;
       msg += `. <button onclick="showPage('experiences')" class="underline ml-1">Vedi esperienze RWE</button>`;
       showBanner('searchBanner', msg, 'success');
+	      // Cache ephemeral RWE profiles so they can be shown immediately in the UI
+	      try {
+	        window._ephemeralRweProfiles = window._ephemeralRweProfiles || {};
+	        (data.results || []).forEach(r => {
+	          if (r && r.episode_id) {
+	            const ep = {
+	              episode_id: r.episode_id,
+	              source: r.source || '',
+	              title: r.title || r.episode_id || '',
+	              extracted_profile: r.profile || r.extracted_profile || {},
+	              source_url: r.source_url || '',
+	              external_id: r.external_id || '',
+	              language: r.language || currentLang,
+	              ingested_at: new Date().toISOString(),
+	              query_context: _activeSearchCtx?.original_query || lastQuery || ''
+	            };
+	            window._ephemeralRweProfiles[r.episode_id] = ep;
+	          }
+	        });
+	      } catch(e) { /* non-fatal */ }
+	
+
       // NEW: collect created RWE profile episode_ids and attach to active search context
       try {
         const returned_ids = (data.results || []).map(r => r && r.episode_id).filter(Boolean);
@@ -2620,6 +2697,28 @@ async function extractExperienceFromCard(btn) {
     if (errors) msg += `, ${errors} errori`;
     msg += `. <button onclick="showPage('experiences')" class="underline ml-1">Vedi esperienze RWE</button>`;
     showBanner('searchBanner', msg, 'success');
+	    // Cache ephemeral RWE profile(s) so they can be shown immediately in the UI
+	    try {
+	      window._ephemeralRweProfiles = window._ephemeralRweProfiles || {};
+	      (data.results || []).forEach(r => {
+	        if (r && r.episode_id) {
+	          const ep = {
+	            episode_id: r.episode_id,
+	            source: r.source || '',
+	            title: r.title || r.episode_id || '',
+	            extracted_profile: r.profile || r.extracted_profile || {},
+	            source_url: r.source_url || '',
+	            external_id: r.external_id || '',
+	            language: r.language || currentLang,
+	            ingested_at: new Date().toISOString(),
+	            query_context: _activeSearchCtx?.original_query || lastQuery || ''
+	          };
+	          window._ephemeralRweProfiles[r.episode_id] = ep;
+	        }
+	      });
+	    } catch(e) { /* non-fatal */ }
+	
+
     try {
       const returned_ids = (data.results || []).map(r => r && r.episode_id).filter(Boolean);
       if (returned_ids.length) {
@@ -2913,6 +3012,33 @@ async function loadProfiles() {
     document.getElementById('profilesNavCount').textContent   = data.total ? `(${data.total})` : '';
     if (!data.profiles?.length) { empty.classList.remove('hidden'); return; }
     list.innerHTML = data.profiles.map(buildProfileCard).join('');
+
+		// Merge ephemeral clinical results (from /pipeline/run) into the view
+		try {
+		  const ephemeralMap = window._ephemeralClinicalProfiles || {};
+		  const ephemeralList = Object.values(ephemeralMap || {});
+		  let ephemeralFiltered = [];
+		  if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length > 0) {
+		    const ids = new Set(_currentSearchEpisodeIds);
+		    ephemeralFiltered = ephemeralList.filter(e => e && ids.has(e.episode_id));
+		  } else if (_activeSearchCtx && Array.isArray(_activeSearchCtx.clinical_profile_episode_ids) && _activeSearchCtx.clinical_profile_episode_ids.length>0) {
+		    const ids = new Set(_activeSearchCtx.clinical_profile_episode_ids);
+		    ephemeralFiltered = ephemeralList.filter(e => e && ids.has(e.episode_id));
+		  } else {
+		    ephemeralFiltered = ephemeralList;
+		  }
+		  const dbProfiles = data.profiles || [];
+		  const dbIds = new Set(dbProfiles.map(p => p.episode_id));
+		  const ephemeralToShow = ephemeralFiltered.filter(ep => ep && !dbIds.has(ep.episode_id));
+		  const combined = [...ephemeralToShow, ...dbProfiles];
+		  if (combined.length) {
+		    list.innerHTML = combined.map(buildProfileCard).join('');
+		    const totalCount = (data.total || 0) + ephemeralToShow.length;
+		    document.getElementById('profilesTotalBadge').textContent = totalCount ? `${totalCount} profile${totalCount!==1?'s':''}` : '';
+		    document.getElementById('profilesNavCount').textContent   = totalCount ? `(${totalCount})` : '';
+		  }
+		} catch(e) { /* non-fatal */ }
+
   } catch(e) {
     skel.classList.add('hidden');
     list.innerHTML = `<p class="text-xs text-red-400">Failed: ${esc(e.message)}</p>`;
@@ -3101,6 +3227,36 @@ async function loadExperiences() {
 
     if (rweTotal) {
       rweGrid.innerHTML = (rwe.profiles || []).map(buildRweProfileCard).join('');
+
+		// Merge ephemeral RWE profiles (from /rwe/extract-batch) into the view
+		try {
+		  const ephemeralMap = window._ephemeralRweProfiles || {};
+		  const ephemeralList = Object.values(ephemeralMap || {});
+		  let ephemeralFiltered = [];
+		  if (_activeSearchCtx && Array.isArray(_activeSearchCtx.rwe_profile_episode_ids) && _activeSearchCtx.rwe_profile_episode_ids.length>0) {
+		    const ids = new Set(_activeSearchCtx.rwe_profile_episode_ids);
+		    ephemeralFiltered = ephemeralList.filter(e => e && ids.has(e.episode_id));
+		  } else if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length>0) {
+		    const ids = new Set(_currentSearchEpisodeIds);
+		    ephemeralFiltered = ephemeralList.filter(e => e && ids.has(e.episode_id));
+		  } else {
+		    ephemeralFiltered = ephemeralList;
+		  }
+		  const dbProfiles = rwe.profiles || [];
+		  const dbIds = new Set(dbProfiles.map(p => p.episode_id));
+		  const ephemeralToShow = ephemeralFiltered.filter(ep => ep && !dbIds.has(ep.episode_id));
+		  const combined = [...ephemeralToShow, ...dbProfiles];
+		  if (combined.length) {
+		    rweGrid.innerHTML = combined.map(buildRweProfileCard).join('');
+		    const totalRweCount = (rwe.count || 0) + ephemeralToShow.length;
+		    const rweBadge = document.getElementById('expRweTotalBadge');
+		    if (rweBadge) rweBadge.textContent = `${totalRweCount} RWE`;
+		    const rweCountEl = document.getElementById('rweExpCount');
+		    if (rweCountEl) rweCountEl.textContent = totalRweCount;
+		    document.getElementById('expNavCount').textContent = totalRweCount ? `(${(legacyTotal||0)+totalRweCount})` : '';
+		  }
+		} catch(e) { /* non-fatal */ }
+
     } else {
       rweEmpty.classList.remove('hidden');
     }

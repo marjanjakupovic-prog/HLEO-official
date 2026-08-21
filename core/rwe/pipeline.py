@@ -461,25 +461,32 @@ class RWEPipeline:
             source_status["maladiesrares"] = status
             all_items.extend(items)
 
-        # ── 2. Deduplicate across (query × source), keep best matched_query ──
+        # ── 2. Annotate relevance for ALL items (do not filter them out yet) ──
         before = len(all_items)
-        all_items = deduplicate(all_items)
-        after = len(all_items)
 
-        # ── 3. Semi-semantic relevance filtering ────────────────────────────
         relevance_query = plan.translated_query or plan.original_query
+        # Compute relevance_score/reason for every item but keep all items (min_score=0.0)
         all_items = relevance_filter(
             all_items,
             relevance_query,
             entities=plan.entities,
+            min_score=0.0,
         )
-        all_items.sort(key=lambda it: it.relevance_score, reverse=True)
+
+        # ── 3. Deduplicate across (query × source), keep the copy with highest relevance_score ──
+        after_scored = len(all_items)
+        all_items = deduplicate(all_items)
+        after = len(all_items)
+
+        # ── 4. Sort all items by relevance_score (descending)
+        all_items.sort(key=lambda it: (it.relevance_score or 0.0), reverse=True)
 
         totals = {
             "retrieved": before,
             "deduped_removed": before - after,
             "unique": after,
-            "relevant": len(all_items),
+            # Keep 'relevant' as a diagnostic: count of items with score >= 0.20
+            "relevant": sum(1 for it in all_items if (it.relevance_score or 0.0) >= 0.20),
             "queries_used": len(plan.expanded_queries),
         }
 

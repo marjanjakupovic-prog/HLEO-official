@@ -247,9 +247,9 @@ class RelationalSearch:
         ep_q = self._build_epmc_query(rel)
         ct_q = self._build_ct_query(rel)
 
-        pm = self.pubmed.search(pm_q, limit=20)
-        ep = self.europepmc.search(ep_q, limit=20)
-        ct = self.clinicaltrials.search(ct_q, limit=10)
+        pm = self.pubmed.search(pm_q, limit=50)
+        ep = self.europepmc.search(ep_q, limit=50)
+        ct = self.clinicaltrials.search(ct_q, limit=50)
 
         stats["candidates"] = {
             "pubmed": len(pm), "europepmc": len(ep), "clinicaltrials": len(ct),
@@ -375,29 +375,12 @@ class RelationalSearch:
     # ── (4) Hard filter (synonym-tolerant) ────────────────────────────────────
 
     def _hard_filter(self, items: list[SearchResult], rel: ClinicalRelation) -> list[SearchResult]:
-        agent_terms = [t.lower() for t in (rel.agent.get("search_terms") or []) if t]
-        if rel.agent.get("normalized"):
-            agent_terms.append(rel.agent["normalized"].lower())
-        mani_terms = [t.lower() for t in (rel.manifestation.get("search_terms") or []) if t]
-        if rel.manifestation.get("normalized"):
-            mani_terms.append(rel.manifestation["normalized"].lower())
-
-        kept = []
-        for it in items:
-            blob = ((getattr(it, "title", "") or "") + " " + (getattr(it, "abstract", "") or "")).lower()
-            has_agent = any(t and t in blob for t in agent_terms)
-            has_mani = any(t and t in blob for t in mani_terms)
-            # If we have no terms to match on, keep the item (don't over-filter).
-            if not agent_terms and not mani_terms:
-                kept.append(it)
-            elif has_agent and has_mani:
-                kept.append(it)
-            elif has_agent and not mani_terms:
-                kept.append(it)
-            elif has_mani and not agent_terms:
-                kept.append(it)
-            # else: drop — clearly incompatible (neither agent nor manifestation present)
-        return kept
+        # NOTE: Disabled hard filtering to preserve all retrieved scientific
+        # candidates. This pipeline previously dropped items that did not
+        # contain both agent and manifestation tokens, which hid potentially
+        # useful records from the user. We still rely on the downstream judge
+        # and ranking to order items by relevance; hard filtering is a no-op.
+        return items
 
     # ── (6) LLM judge + (7) re-rank ──────────────────────────────────────────
 
