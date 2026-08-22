@@ -196,6 +196,11 @@ def _articles_from_relational(rel_out: dict, only_relevant: bool = True) -> list
     In scientific mode, profiles are extracted ONLY from articles the relational
     judge labeled `relevant` (the core rule). relevance_label/score/reason are
     carried into validation_payload so each profile stays anchored to the relation.
+
+    This function is defensive: RelationalSearch.search() returns a dict that
+    may include non-iterable keys such as 'relation' (ClinicalRelation) and
+    'stats'. Iterate only over the known per-source lists to avoid treating
+    relational metadata as iterables.
     """
     articles: list[dict] = []
     builders = {
@@ -203,23 +208,65 @@ def _articles_from_relational(rel_out: dict, only_relevant: bool = True) -> list
         'europepmc': _article_from_europepmc,
         'clinicaltrials': _article_from_clinicaltrials,
     }
-    for source_key, items in (rel_out or {}).items():
-        if source_key is None or not items:
-            continue
-        builder = builders.get(source_key)
-        for item in items:
-            label = (getattr(item, "metadata", None) or {}).get("relevance_label")
-            if only_relevant and label != "relevant":
+
+    if not rel_out:
+        return articles
+
+    # Preferred: explicit per-source extraction avoids accidentally iterating
+    # over the 'relation' or 'stats' objects that appear in rel_out.
+    if isinstance(rel_out, dict):
+        for source_key in ('pubmed', 'europepmc', 'clinicaltrials'):
+            items = rel_out.get(source_key)
+            if not items:
                 continue
-            if builder:
-                art = builder(item)
-            else:
-                art = _article_from_generic(item, source_key=source_key)
-            md = getattr(item, "metadata", None) or {}
-            art["relevance_label"]  = md.get("relevance_label")
-            art["relevance_score"]  = md.get("relevance_score")
-            art["relevance_reason"] = md.get("relevance_reason")
+            builder = builders.get(source_key)
+            # Normalize single-item responses into a list
+            if not isinstance(items, (list, tuple)):
+                items = [items]
+            for item in items:
+                if item is None:
+                    continue
+                # metadata may be a dict or an attribute on the item
+                md = getattr(item, 'metadata', None) or (item if isinstance(item, dict) else {})
+                if isinstance(md, dict):
+                    label = md.get('relevance_label')
+                else:
+                    label = None
+                if only_relevant and label != 'relevant':
+                    continue
+                if builder:
+                    art = builder(item)
+                else:
+                    art = _article_from_generic(item, source_key=source_key)
+                # Attach provenance/relevance info when available
+                try:
+                    art['relevance_label'] = md.get('relevance_label') if isinstance(md, dict) else None
+                    art['relevance_score'] = md.get('relevance_score') if isinstance(md, dict) else None
+                    art['relevance_reason'] = md.get('relevance_reason') if isinstance(md, dict) else None
+                except Exception:
+                    art['relevance_label'] = art.get('relevance_label')
+                    art['relevance_score'] = art.get('relevance_score')
+                    art['relevance_reason'] = art.get('relevance_reason')
+                articles.append(art)
+        return articles
+
+    # Fallback: if rel_out is a list/iterable (legacy shape), map generically
+    if isinstance(rel_out, (list, tuple)):
+        for item in rel_out:
+            try:
+                art = _article_from_generic(item, source_key='pubmed')
+            except Exception:
+                # Best-effort fallback for unknown legacy items
+                art = {
+                    'source': 'unknown',
+                    'episode_id': '',
+                    'title': str(item)[:120],
+                    'abstract': ''
+                }
             articles.append(art)
+        return articles
+
+    logger.warning("_articles_from_relational: unexpected rel_out type %s", type(rel_out))
     return articles
 
 
@@ -317,7 +364,9 @@ def search(q: str = Query(..., description="Search query"),
         # Convert raw items into dictionaries reliably. _to_dict may return a string
         # for certain lightweight objects (e.g. SimpleNamespace used in tests). In
         # that case, fall back to the original item's __dict__ when available.
-        raw_pubmed = rel_out["pubmed"]
+        raw_pubmed = rel_out.get("pubmed") or []
+        if not isinstance(raw_pubmed, (list, tuple)):
+            raw_pubmed = [raw_pubmed] if raw_pubmed else []
         pubmed = []
         for item in raw_pubmed:
             d = _to_dict(item)
@@ -328,7 +377,9 @@ def search(q: str = Query(..., description="Search query"),
                     d = {"title": str(item)}
             pubmed.append(d)
 
-        raw_europepmc = rel_out["europepmc"]
+        raw_europepmc = rel_out.get("europepmc") or []
+        if not isinstance(raw_europepmc, (list, tuple)):
+            raw_europepmc = [raw_europepmc] if raw_europepmc else []
         europepmc = []
         for item in raw_europepmc:
             d = _to_dict(item)
@@ -339,7 +390,9 @@ def search(q: str = Query(..., description="Search query"),
                     d = {}
             europepmc.append(d)
 
-        raw_clinicaltrials = rel_out["clinicaltrials"]
+        raw_clinicaltrials = rel_out.get("clinicaltrials") or []
+        if not isinstance(raw_clinicaltrials, (list, tuple)):
+            raw_clinicaltrials = [raw_clinicaltrials] if raw_clinicaltrials else []
         clinicaltrials = []
         for item in raw_clinicaltrials:
             d = _to_dict(item)
@@ -350,7 +403,12 @@ def search(q: str = Query(..., description="Search query"),
                     d = {}
             clinicaltrials.append(d)
 
-        reddit_raw     = [_to_dict(p) for p in rel_out["reddit"]]
+        raw_reddit = rel_out.get("reddit") or []
+        if not isinstance(raw_reddit, (list, tuple)):
+            raw_reddit = [raw_reddit] if raw_reddit else []
+        reddit_raw = []
+        for p in raw_reddit:
+            reddit_raw.append(_to_dict(p))
 
         # Normalize fields so clients/tests receive strings instead of nulls.
         # Specifically: when PMID is present but url is null, build the canonical
@@ -384,15 +442,40 @@ def search(q: str = Query(..., description="Search query"),
                 a["url"] = f"https://clinicaltrials.gov/study/{nct}" if nct else ""
             if a.get("doi") is None:
                 a["doi"] = ""
-        rel = rel_out["relation"]
+
+        rel = rel_out.get("relation")
+        # Normalise relation -> dict form for the orchestration payload
+        rel_dict = None
+        if rel is None:
+            rel_dict = {}
+        elif hasattr(rel, "to_dict"):
+            try:
+                rel_dict = rel.to_dict()
+            except Exception:
+                rel_dict = _to_dict(rel)
+        elif isinstance(rel, dict):
+            rel_dict = rel
+        else:
+            rel_dict = _to_dict(rel)
+
+        # Determine search_query robustly
+        search_query = q
+        if isinstance(rel, dict):
+            search_query = rel.get("scientific_query") or q
+        else:
+            try:
+                search_query = getattr(rel, "scientific_query", q) or q
+            except Exception:
+                search_query = q
+
         orch_dict = {
             "original_query":      q,
-            "search_query":        rel.scientific_query or q,
+            "search_query":        search_query,
             "detected_language":   "",
             "translation_applied": True,
             "confidence":          1.0,
-            "relation":            rel.to_dict(),
-            "retrieval_stats":     rel_out["stats"],
+            "relation":            rel_dict,
+            "retrieval_stats":     rel_out.get("stats"),
         }
         return {
             "query":          q,
@@ -470,6 +553,8 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
     extractor = ArticleExtractor()
     if extractor.client is None:
         return {"error": "OPENAI_API_KEY not set — cannot run LLM extraction."}
+
+    import datetime as _dt  # local alias to avoid shadowing module-level names
 
     # ── Retrieval dispatch (mode-aware) ──────────────────────────────────────
     rel_dict: Optional[dict] = None   # relation preserved from scientific search
@@ -550,7 +635,7 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
             "Extraction | %d articles → parallel (max_workers=%d)",
             len(needs_llm), _MAX_WORKERS,
         )
-        t_llm_start = datetime.now(timezone.utc)
+        t_llm_start = _dt.datetime.now(_dt.timezone.utc)
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
             futures = {pool.submit(_extract_one, item): item[0] for item in needs_llm}
             for fut in as_completed(futures):
@@ -563,7 +648,7 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
                     )
                 else:
                     logger.info("Extracted %s", articles[idx]["episode_id"])
-        t_llm_elapsed = (datetime.now(timezone.utc) - t_llm_start).total_seconds()
+        t_llm_elapsed = (_dt.datetime.now(_dt.timezone.utc) - t_llm_start).total_seconds()
         logger.info(
             "Extraction | done in %.1fs (%d ok, %d failed)",
             t_llm_elapsed,
@@ -632,6 +717,22 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
     else:
         orchestration_out = orch.to_dict()
 
+    import uuid
+    import datetime as _dt
+    from core.temp_store import temp_store
+
+    # Persist results only in the ephemeral temp-store (no DB writes)
+    search_id = str(uuid.uuid4())
+    temp_payload = {
+        "type": "clinical_profiles",
+        "query": q,
+        "orchestration": orchestration_out,
+        "results": saved,
+        "episode_ids": all_episode_ids,
+        "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+    temp_store.set(search_id, temp_payload)
+
     return {
         "query":           q,
         "orchestration":   orchestration_out,
@@ -642,6 +743,7 @@ def run_pipeline(q: str = Query(...), db: Session = Depends(get_db),
         "episode_ids":     all_episode_ids,
         "results":         saved,
         "error_details":   errors,
+        "search_id":       search_id,
     }
 
 
@@ -668,15 +770,46 @@ def _get_attribution(db: Session, episode_id: str) -> Optional[dict]:
 def list_profiles(
     limit:       int           = Query(20, ge=1, le=100),
     episode_ids: Optional[str] = Query(None),   # comma-separated; filters to current search
+    search_id: Optional[str] = Query(None, description="Optional ephemeral search_id returned by /pipeline/run"),
     db:          Session       = Depends(get_db),
 ):
     """Return saved clinical profiles with source attribution.
 
     When `episode_ids` is supplied (comma-separated), only those profiles are
     returned — this powers the per-search isolation in the Profiles view.
+    If `search_id` is provided and references an ephemeral result, return that
+    transient result set instead of reading the persistent DB.
     """
     id_filter = [eid.strip() for eid in episode_ids.split(",") if eid.strip()] \
                 if episode_ids else None
+
+    # Ephemeral search path: prefer transient store when search_id provided
+    if search_id:
+        from core.temp_store import temp_store
+        data = temp_store.get(search_id)
+        if data and data.get("type") == "clinical_profiles":
+            saved = data.get("results", [])
+            mapped = []
+            for s in saved[:limit]:
+                vp = s.get("validation_payload", {}) or {}
+                prof = s.get("profile", {}) or {}
+                mapped.append({
+                    "id": None,
+                    "episode_id": s.get("episode_id"),
+                    "user_id": s.get("source") or vp.get("source"),
+                    "final_category": None,
+                    "confidence_score": None,
+                    "adjudication_required": False,
+                    "processed_at": None,
+                    "title": vp.get("title", ""),
+                    "source": vp.get("source", s.get("source", "")),
+                    "url": vp.get("url", ""),
+                    "journal": vp.get("journal", ""),
+                    "pub_year": vp.get("pub_year", ""),
+                    "profile": prof,
+                    "attribution": None,
+                })
+            return {"total": len(saved), "profiles": mapped}
 
     q = select(ClinicalProfile).order_by(desc(ClinicalProfile.processed_at))
     if id_filter is not None:
@@ -1070,6 +1203,19 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
         })
         created += 1
 
+    import uuid
+    import datetime as _dt
+    from core.temp_store import temp_store
+
+    search_id = str(uuid.uuid4())
+    temp_payload = {
+        "type": "rwe_profiles",
+        "query": body.query,
+        "results": results,
+        "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+    temp_store.set(search_id, temp_payload)
+
     return {
         "query": body.query,
         "rwe_records_found": found,
@@ -1085,6 +1231,7 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
             f"({skipped} saltati, {errors} errori)."
             if found else "Non sono disponibili record RWE da estrarre."
         ),
+        "search_id": search_id,
     }
 
 
@@ -1094,8 +1241,41 @@ def list_rwe_profiles(
     source: Optional[str] = None,
     treatment: Optional[str] = None,
     limit: int = 50,
+    search_id: Optional[str] = Query(None, description="Optional ephemeral search_id returned by /rwe/extract-batch"),
 ):
-    """FASE 13: list stored RWE profiles."""
+    """FASE 13: list stored RWE profiles.
+
+    When `search_id` is supplied and references an ephemeral result, return
+    the transient result set stored in the temp-store instead of reading the
+    persistent RWEProfile table.
+    """
+    if search_id:
+        from core.temp_store import temp_store
+        data = temp_store.get(search_id)
+        if data and data.get("type") == "rwe_profiles":
+            saved = data.get("results", [])[:limit]
+            mapped = []
+            for s in saved:
+                mp = {
+                    "episode_id": s.get("episode_id"),
+                    "source": s.get("source"),
+                    "source_type": s.get("source_type"),
+                    "evidence_tier": s.get("evidence_tier"),
+                    "title": s.get("title"),
+                    "treatment": s.get("treatment"),
+                    "condition": s.get("condition"),
+                    "experience_type": s.get("experience_type"),
+                    "is_testimonial": False,
+                    "extracted_profile": s.get("profile", {}),
+                    "source_url": s.get("source_url"),
+                    "external_id": s.get("external_id"),
+                    "query_context": s.get("query_context"),
+                    "language": s.get("language"),
+                    "ingested_at": s.get("created_at"),
+                }
+                mapped.append(mp)
+            return {"count": len(saved), "profiles": mapped}
+
     q = db.query(RWEProfile)
     if source:
         q = q.filter(RWEProfile.source == source)
@@ -1417,6 +1597,46 @@ def assistant_chat(
     clinical_ids = sc_raw.get("clinical_profile_episode_ids", []) if sc_raw else []
     rwe_ids = sc_raw.get("rwe_profile_episode_ids", []) if sc_raw else []
 
+    # Support ephemeral clinical & RWE search ids in the provided search_context
+    clinical_search_id = sc_raw.get("clinical_profile_search_id") if sc_raw else None
+    rwe_search_id = sc_raw.get("rwe_profile_search_id") if sc_raw else None
+    if clinical_search_id:
+        from core.temp_store import temp_store
+        t = temp_store.get(clinical_search_id)
+        if t and t.get("type") == "clinical_profiles":
+            cp_rows = []
+            for s in (t.get("results", []) or [])[:30]:
+                vp = s.get("validation_payload", {}) or {}
+                payload = s.get("profile", {}) or {}
+                class _Tmp:
+                    pass
+                tmp = _Tmp()
+                tmp.episode_id = s.get("episode_id")
+                tmp.validation_payload = vp
+                tmp.extracted_payload = payload
+                tmp.user_id = s.get("source") or vp.get("source", "")
+                tmp.processed_at = None
+                cp_rows.append(tmp)
+            # Avoid DB lookup path below
+            clinical_ids = []
+
+    if rwe_search_id:
+        from core.temp_store import temp_store
+        t = temp_store.get(rwe_search_id)
+        if t and t.get("type") == "rwe_profiles":
+            rp_rows = []
+            for s in (t.get("results", []) or [])[:30]:
+                class _TmpRWE:
+                    pass
+                tmp = _TmpRWE()
+                tmp.episode_id = s.get("episode_id")
+                tmp.extracted_profile = s.get("profile", {})
+                tmp.source = s.get("source")
+                tmp.title = s.get("title")
+                rp_rows.append(tmp)
+            rwe_ids = []
+
+
     included_eps = set()
 
     # Fetch ClinicalProfile rows referenced by the search context, if any
@@ -1456,6 +1676,8 @@ def assistant_chat(
         ).scalars().all()
         for rp in rp_rows:
             p = rp.extracted_profile or {}
+
+
             condition = p.get("condition", "unknown condition")
             summary = p.get("experience_summary", "")
             treats = ", ".join(p.get("treatments_tried", [])[:3]) or p.get("treatment", "")

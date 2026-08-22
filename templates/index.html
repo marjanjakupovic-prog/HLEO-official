@@ -509,7 +509,7 @@
     <div class="sidebar-section">
       <div class="sidebar-section-title"><span data-i18n="sidebar_group_config">CONFIGURAZIONE</span></div>
       <div class="sidebar-nav">
-        <button class="nav-tab" data-page="admin">
+        <button id="adminNavTab" class="nav-tab" data-page="admin">
           <svg class="nav-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a6.759 6.759 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.241.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
           <span data-i18n="nav_api_config">API &amp; Config</span>
         </button>
@@ -813,6 +813,14 @@
     <div class="skeleton rounded-xl h-44"></div>
     <div class="skeleton rounded-xl h-44"></div>
   </div>
+      <div id="expEmpty" class="hidden empty-state text-center py-14">
+        <h3 id="expEmptyTitle" class="text-lg font-semibold mb-2"></h3>
+        <div id="expEmptyBody" class="text-sm text-slate-400 dark:text-slate-500 mb-3"></div>
+        <div id="expEmptySetup" class="hidden">
+          <button id="expSetupBtn" class="ds-btn ds-btn-primary">Configure Sources</button>
+        </div>
+      </div>
+
 
   <div class="grid xl:grid-cols-2 gap-4">
     <section class="section-panel">
@@ -1920,6 +1928,7 @@ function badge(color, label) {
 // ─── Banner helper ───────────────────────────────────────────────────────────
 function showBanner(id, msg, type='error') {
   const el = document.getElementById(id);
+  if (!el) return;
   const cls = type==='error'   ? 'dark:bg-red-900/30 bg-red-50 dark:border-red-800 border-red-200 dark:text-red-300 text-red-700'
             : type==='success' ? 'dark:bg-emerald-900/30 bg-emerald-50 dark:border-emerald-800 border-emerald-200 dark:text-emerald-300 text-emerald-700'
             :                    'dark:bg-yellow-900/20 bg-yellow-50 dark:border-yellow-800 border-yellow-200 dark:text-yellow-300 text-yellow-700';
@@ -2285,6 +2294,12 @@ document.getElementById('runPipelineBtn').addEventListener('click', async () => 
     // NEW: persist clinical profile episode ids in the active search context
     _activeSearchCtx = _activeSearchCtx || {};
     _activeSearchCtx.clinical_profile_episode_ids = data.episode_ids || [];
+    if (data.search_id) {
+      _activeSearchCtx.clinical_profile_search_id = data.search_id;
+      try { sessionStorage.setItem('hleo:clinical_search_id', data.search_id); } catch(e) {}
+    } else {
+      _activeSearchCtx.clinical_profile_search_id = null;
+    }
     _profilesDirty = true;
     if (activePage === 'profiles') loadProfiles();
     refreshNavCounts();
@@ -2514,6 +2529,13 @@ document.getElementById('runExperiencesBtn').addEventListener('click', async () 
         if (returned_ids.length) {
           _activeSearchCtx = _activeSearchCtx || {};
           _activeSearchCtx.rwe_profile_episode_ids = (_activeSearchCtx.rwe_profile_episode_ids || []).concat(returned_ids);
+        }
+        if (data.search_id) {
+          _activeSearchCtx = _activeSearchCtx || {};
+          _activeSearchCtx.rwe_profile_search_id = data.search_id;
+          try { sessionStorage.setItem('hleo:rwe_search_id', data.search_id); } catch(e) {}
+        } else {
+          _activeSearchCtx.rwe_profile_search_id = null;
         }
       } catch(e) {
         // non-fatal: context sync best-effort
@@ -2895,12 +2917,12 @@ async function loadProfiles() {
   const skel  = document.getElementById('profilesSkeleton');
   skel.classList.remove('hidden'); list.innerHTML=''; empty.classList.add('hidden');
 
-  // Build URL: filter by current search episode_ids when available.
-  // When _currentSearchEpisodeIds is null (cold load) or [] (search run,
-  // pipeline not yet completed) we fetch all saved profiles instead of
-  // short-circuiting to the empty state — existing profiles must stay visible.
-  let url = '/profiles?limit=50';
-  if (Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length > 0) {
+  // Prefer ephemeral results when a search_id is available in the active
+  // search context (stored in sessionStorage by /pipeline/run). Fall back
+  // to episode_ids filtering or global list when absent.
+  const sid = _activeSearchCtx?.clinical_profile_search_id || sessionStorage.getItem('hleo:clinical_search_id') || null;
+  let url = sid ? `/profiles?search_id=${encodeURIComponent(sid)}&limit=50` : '/profiles?limit=50';
+  if (!sid && Array.isArray(_currentSearchEpisodeIds) && _currentSearchEpisodeIds.length > 0) {
     url += `&episode_ids=${encodeURIComponent(_currentSearchEpisodeIds.join(','))}`;
   }
 
@@ -3054,7 +3076,7 @@ function updateExpEmptyState(status, reason) {
   if (title)  title.textContent = t(copy.titleKey);
   if (body)   body.innerHTML    = copy.bodyKey ? t(copy.bodyKey) : esc(reason || t('exp_empty_default_body'));
   if (setup)  setup.classList.toggle('hidden', !copy.showSetup);
-  empty.classList.remove('hidden');
+  if (empty) empty.classList.remove('hidden');
 }
 
 async function loadExperiences() {
@@ -3070,9 +3092,10 @@ async function loadExperiences() {
   legacyEmpty.classList.add('hidden');
   rweEmpty.classList.add('hidden');
   try {
+    const rweSid = _activeSearchCtx?.rwe_profile_search_id || sessionStorage.getItem('hleo:rwe_search_id') || null;
     const [legacyRes, rweRes] = await Promise.all([
       fetch('/experiences?limit=50'),
-      fetch('/rwe/profiles?limit=50'),
+      fetch(rweSid ? `/rwe/profiles?search_id=${encodeURIComponent(rweSid)}&limit=50` : '/rwe/profiles?limit=50'),
     ]);
     const legacy = legacyRes.ok ? await legacyRes.json() : { total: 0, experiences: [] };
     const rwe = rweRes.ok ? await rweRes.json() : { count: 0, profiles: [] };
