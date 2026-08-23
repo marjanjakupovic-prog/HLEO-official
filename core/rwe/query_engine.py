@@ -44,6 +44,7 @@ from core.biomedical_kb import (
     quick_translate_it,
 )
 from core.orchestrator import QueryOrchestrator
+from core.rwe.intent import build_intent, intent_scoring_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,9 @@ class RWEQueryPlan:
     translation_applied: bool
     entities: list = field(default_factory=list)        # (type, canonical, conf)
     expanded_queries: List[ExpandedQuery] = field(default_factory=list)
+    # QU-aware relevance (V3): structured intent, built ONLY when the
+    # HLEO_RWE_INTENT_SCORING feature flag is on; None = pure V1 behaviour.
+    intent: Optional[object] = None                   # RWEQueryIntent | None
 
     def query_strings(self) -> List[str]:
         """Flat list of query strings (deduplicated, order preserved)."""
@@ -149,6 +153,11 @@ class RWEQueryPlan:
                 }
                 for eq in self.expanded_queries
             ],
+            "intent": (
+                self.intent.model_dump()
+                if self.intent is not None and hasattr(self.intent, "model_dump")
+                else None
+            ),
         }
 
 
@@ -290,6 +299,18 @@ class RWEQueryEngine:
             entities=entities,
         )
 
+        # ── 6. QU intent for the QU-aware relevance scorer (V3) ─────────────
+        # Feature-flagged: when disabled, intent stays None and the pipeline
+        # behaves exactly like V1 (no LLM call, no behaviour change).
+        intent = None
+        if intent_scoring_enabled():
+            # External vocabulary evidence is a SECOND, independent flag;
+            # build_resolver_from_env() returns None when HLEO_VOCAB_ENABLED
+            # is off, so the intent is built exactly as before.
+            from core.vocab.resolver import build_resolver_from_env
+            intent = build_intent(translated, q, entities, use_llm=True,
+                                  resolver=build_resolver_from_env())
+
         return RWEQueryPlan(
             original_query=q,
             detected_language=lang,
@@ -297,6 +318,7 @@ class RWEQueryEngine:
             translation_applied=translation_applied,
             entities=entities,
             expanded_queries=expanded,
+            intent=intent,
         )
 
     # ── Entity recognition ───────────────────────────────────────────────────

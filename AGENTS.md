@@ -251,3 +251,50 @@ beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
   `id="page-admin"` in templates/index.html.
 - Admin enabled via env `HLEO_ADMIN_USERNAME` + `HLEO_ADMIN_PASSWORD_HASH`
   (bcrypt; generate with `python -c "from core.admin_auth import hash_password; print(hash_password('your-password'))" `).
+
+## Vocabulary Provider Layer (2026-08-23) — feature-flagged, OFF by default
+- `core/vocab/`: external structured-vocabulary layer feeding V3 intent as
+  TYPED EVIDENCE (never auto-synonyms). Flag `HLEO_VOCAB_ENABLED` (default off
+  → pipeline byte-identical to plain V1/V3). `HLEO_VOCAB_PROVIDERS` default
+  `rxnorm,mesh,conceptnet,wikidata`.
+- Providers (all `VocabularyProvider` in `base.py`, never raise, timeout 10s,
+  silent skip when unavailable): `rxnorm.py` (NLM RxNav REST, no key; drug
+  canonicalisation brand↔generic — NOTE: RxNav rejects %2B, tty list must
+  keep literal `+`, same pitfall as openFDA), `mesh.py` (NLM MeSH RDF REST:
+  lookup/descriptor + `{UI}.json`; descriptor uses `label`, Term records use
+  `prefLabel`; SPARQL endpoint does not answer label queries — do NOT use),
+  `loinc.py` (FHIR fhir.loinc.org, env-only creds `HLEO_LOINC_USERNAME/
+  PASSWORD`, absent → available()=False), `conceptnet.py` (general-purpose
+  multilingual, CC BY-SA; API was 502-down on 2026-08-23 — fallback design
+  absorbs it), `wikidata.py` (general-purpose aliases, CC0; FP-prone on
+  abbreviations, confidence-capped). `umls.py` + `snomed.py` = INTERFACE
+  STUBS ONLY, inactive until license (`HLEO_UMLS_API_KEY`, `HLEO_SNOMED_*`).
+- `models.py`: `VocabularyMatch` (provider, concept_id, preferred_term,
+  synonyms, semantic_group, language, confidence, match_kind, source_url,
+  metadata) + `VocabularyResolution`. match_kind ∈ exact/canonical/preferred/
+  synonym/translation/abbreviation/orthographic_variant/colloquial/slang/
+  normalized/concept/related_concept; `MATCH_TIERS` weights; related_concept
+  = evidence only, NEVER scored.
+- `cache.py`: `VocabCache` TTL (env `HLEO_VOCAB_CACHE_TTL` default 24h),
+  per-provider namespace, sha256 keys (NO credentials), optional JSON file
+  via `HLEO_VOCAB_CACHE_PATH` (default memory-only), `HLEO_VOCAB_CACHE_DISABLE=1`.
+  GOTCHA FIXED: `cache or VocabCache()` silently discards shared caches
+  because empty VocabCache is falsy (`__len__`) — always use
+  `cache if cache is not None else ...`. Resolver shares a process-wide
+  default cache.
+- Integration: `RWEQueryIntent.vocabulary` (slim dict); `build_intent(...,
+  resolver=...)` wired in query_engine only when BOTH flags on;
+  `merged_sides` returns extra `tiers` map (term→weight) and injects
+  provider synonyms into the SAME side as their canonical; `_score_item_v3`
+  weights hits by tier (absent=1.0 → identical scores without vocab).
+  GENERIC_EVENT_TERMS moved to core/rwe/intent.py — vocabulary synonyms are
+  NEVER injected into generic any-event side-sets ("side effects") or the
+  generic scoring branch breaks (benchmark regression found+fixed 2026-08-23).
+- Tests: `tests/test_vocab.py` (32 tests, all offline via fake _get_json).
+  Full suite 249 passed.
+- Benchmark: `benchmarks/vocab_ab_benchmark.py` (3 arms V1/V3/V3+vocab, 33
+  queries incl. IT colloquial, abbreviations minox/dut/fin/rogaine, slang).
+  Result: v3vocab ≡ v3 on kept sets (no harm); big gains are QU-level
+  (minox→minoxidil canonicalisation, R 0.22→0.97 P=1.0). Vocabulary probe +
+  cache stats in `vocab_ab_report.json`. Known unresolved: "dut" (no provider
+  maps it, QU doesn't canonicalise), ConceptNet down at benchmark time.

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from core.biomedical_kb import (
     DRUG_ALIASES,
@@ -26,6 +26,7 @@ from core.biomedical_kb import (
     SYMPTOM_ALIASES,
 )
 from core.orchestrator import QueryOrchestrator  # noqa: F401  (patched by tests via core.rwe.pipeline.QueryOrchestrator)
+from core.rwe.intent import GENERIC_EVENT_TERMS, merged_sides
 from core.rwe.models import RWEItem, RWESearchResult
 from core.rwe.query_engine import RWEQueryEngine
 
@@ -274,12 +275,207 @@ def _score_item(
     return round(min(1.0, base), 3), reason
 
 
+# Generic "any adverse event" outcome terms (e.g. "finasteride side effects"):
+# the user asks about ANY event, so the event side is satisfied by any known
+# adverse-event vocabulary rather than by one literal phrase.
+# Canonical definition lives in core.rwe.intent (shared with merged_sides,
+# which must not inject vocabulary synonyms into generic-event side-sets).
+_GENERIC_EVENT_TERMS = GENERIC_EVENT_TERMS
+
+# Standard adverse-event vocabulary used ONLY for generic any-event queries
+# ("finasteride side effects"): the event side is satisfied when the record
+# mentions any common adverse reaction. MedDRA-style common terms, EN+IT.
+_GENERIC_EVENT_VOCAB = {
+    "nausea", "vomiting", "vomito", "diarrhoea", "diarrhea", "diarrea",
+    "headache", "mal di testa", "dizziness", "dizzy", "vertigo", "vertigini",
+    "capogiri", "insomnia", "insonnia", "fatigue", "stanchezza", "anxiety",
+    "ansia", "anxious", "rash", "eruzione", "pruritus", "itching", "prurito",
+    "palpitations", "palpitazioni", "brain fog", "nebbia mentale",
+    "gynecomastia", "ginecomastia", "edema", "oedema", "gonfiore",
+    "weight gain", "weight loss", "aumento di peso", "adverse",
+}
+
+
+def _v3_event_terms(event_side: set) -> set:
+    """Match terms for the event side, with group semantics extended to QU
+    phrasings the production exact-membership check would miss.
+
+    Production ``_event_match_terms`` admits a synonym group only when a query
+    term IS a group member. QU terms like "initial shedding" or
+    "androgenetic alopecia" are not members, so V3 additionally triggers a
+    group when a term CONTAINS a member ("androgenetic alopecia" ⊃ "alopecia")
+    or a term's head word IS CONTAINED in a member ("shedding" ⊂ "hair
+    shedding"). Split head words are used ONLY as trigger probes, never as
+    match terms themselves (a word like "hair" would match everything).
+    """
+    terms = {t for t in event_side if t}
+    # Head words are trigger PROBES only: a probe triggers a group when it is
+    # a PROPER substring of a member ("shedding" ⊂ "hair shedding"). A probe
+    # equal to a member ("alopecia" from "androgenetic alopecia") must NOT
+    # widen the term to the whole generic group — the term is more specific.
+    probes = set()
+    for t in terms:
+        probes.update(w for w in t.split() if len(w) > 3)
+    out = set(terms)
+    for members, match_tokens in _EVENT_SYNONYM_GROUPS:
+        exact = any(t == m for t in terms for m in members)
+        headword = any(p != m and p in m for p in probes for m in members)
+        if exact or headword:
+            out.update(m.lower() for m in members)
+            out.update(t.lower() for t in match_tokens)
+    return out
+
+
+def _v3_event_score(body: str, condition_field: str, event_side: set,
+                    is_authoritative_match: bool,
+                    tiers: Optional[Dict[str, float]] = None,
+                    ) -> Tuple[float, List[str]]:
+    """Event-side score for V3, including the generic-any-event case.
+
+    ``tiers`` (optional, from external vocabulary evidence) weights each
+    matched term: terms absent from the map weight 1.0, so without
+    vocabulary evidence the score is byte-identical to the pre-vocabulary
+    behaviour."""
+    def _score(hits: List[str]) -> float:
+        if tiers:
+            w = sum(tiers.get(h, 1.0) for h in hits)
+        else:
+            w = float(len(hits))
+        return min(1.0, 0.5 + 0.25 * w)
+
+    if not event_side:
+        return 0.5, []
+    if event_side <= _GENERIC_EVENT_TERMS:
+        # "Any adverse event" query: authoritative reports ARE adverse-event
+        # reports by definition; other sources must mention some known event
+        # vocabulary (union of all semantic groups + the generic terms).
+        if is_authoritative_match:
+            return 1.0, ["(any adverse event — authoritative report)"]
+        vocab = set(_GENERIC_EVENT_TERMS) | _GENERIC_EVENT_VOCAB
+        for members, match_tokens in _EVENT_SYNONYM_GROUPS:
+            vocab.update(m.lower() for m in members)
+            vocab.update(t.lower() for t in match_tokens)
+        hits = sorted({t for t in vocab if t and t in body})[:6]
+        return (_score(hits), hits) if hits else (0.0, [])
+    terms = _v3_event_terms(event_side)
+    hits = sorted({t for t in terms if t and t in body})[:6]
+    if not hits and condition_field:
+        hits = sorted({t for t in terms if t and t in condition_field})[:6]
+    if not hits:
+        return 0.0, []
+    return _score(hits), hits
+
+
+def _score_item_v3(
+    it: RWEItem,
+    query: str,
+    sides: Dict[str, set],
+    is_authoritative_match: bool,
+) -> Tuple[float, str]:
+    """
+    QU-aware relevance score (V3). Same contract as ``_score_item`` (V1):
+    returns (0–1 score, human match reason) and never mutates the item.
+
+    Differences vs V1:
+    - the query sides come from the structured QU intent (interventions /
+      outcomes / conditions + QU synonyms), UNIONED with the KB entities —
+      the event side exists even when the KB does not recognise the concept
+      (the "shedding" gap);
+    - anchor side = interventions ∪ conditions; event side = outcomes ∪
+      conditions (a condition anchors and also expresses the topic);
+    - SYMMETRIC strictness: for a two-sided query, a record matching only
+      one side scores low (V1 penalised only the missing-event case);
+    - openFDA keeps the V1 rule: drug trusted server-side, event verified.
+    """
+    q_tokens = _tokens(query)
+    body = f"{it.title} {it.text}".lower()
+    treatment_lower = (it.treatment or "").lower()
+    condition_lower = (it.condition or "").lower()
+    body_tokens = _tokens(
+        f"{it.title} {it.text} {treatment_lower} {condition_lower}"
+    )
+    overlap = q_tokens & body_tokens
+    token_score = len(overlap) / max(1, len(q_tokens)) if q_tokens else 0.0
+
+    iv, oc, cd = sides["iv"], sides["oc"], sides["cd"]
+    tiers = sides.get("tiers") or {}
+
+    # ── side resolution (avoids the degenerate cd-anchor case) ──────────────
+    # Two-sided queries: the anchor must be the DRUG when one is present
+    # (a condition mention alone cannot satisfy both sides of "finasteride
+    # hair loss"); the event side is outcomes ∪ conditions. Queries without
+    # an intervention are anchored by the condition itself.
+    if iv:
+        anchor_terms = iv
+        event_side = oc | cd
+    else:
+        anchor_terms = cd
+        event_side = oc if oc else cd
+    anchor_side = anchor_terms
+
+    # ── anchor side (intervention or condition) ──
+    if is_authoritative_match and iv:
+        anchor_score, anchor_hits = 1.0, ["(authoritative)"]
+    else:
+        hay = f"{body} {treatment_lower}"
+        anchor_hits = sorted({t for t in anchor_terms if t and t in hay})
+        # Vocabulary tiers weight each hit; absent terms weight 1.0 (unchanged
+        # behaviour when no vocabulary evidence is present).
+        anchor_w = sum(tiers.get(h, 1.0) for h in anchor_hits)
+        anchor_score = min(1.0, 0.6 + 0.2 * anchor_w) if anchor_hits else 0.0
+        # A condition anchor also matches semantically (multilingual groups),
+        # e.g. an Italian post about "caduta capelli" anchors "hair loss".
+        if cd and not iv:
+            sem_score, sem_hits = _v3_event_score(body, condition_lower, cd,
+                                                  False, tiers)
+            if sem_score > anchor_score:
+                anchor_score, anchor_hits = sem_score, sem_hits
+
+    # ── event side (QU outcomes/conditions, extended semantic groups) ──
+    event_score, event_hits = _v3_event_score(
+        body, condition_lower, event_side, is_authoritative_match, tiers)
+
+    # ── structured-field boost (small, bounded) ──
+    boost = 0.0
+    if treatment_lower and any(t in treatment_lower for t in anchor_side):
+        boost += 0.05
+    if condition_lower and any(t in condition_lower for t in event_side):
+        boost += 0.05
+
+    # ── combine ──
+    if anchor_side and event_side:
+        if event_score == 0.0:
+            base = 0.15 * anchor_score + 0.05 * token_score
+            reason = (f"v3 anchor_match_only (anchor={anchor_hits[:2]}; "
+                      f"event_missing)")
+        elif anchor_score == 0.0:
+            base = 0.15 * event_score + 0.05 * token_score
+            reason = (f"v3 event_match_only (event={event_hits[:3]}; "
+                      f"anchor_missing)")
+        else:
+            base = (0.40 * anchor_score + 0.40 * event_score
+                    + 0.10 * token_score + boost)
+            reason = (f"v3 anchor+event (anchor={anchor_hits[:2]}; "
+                      f"event={event_hits[:3]}; tokens={len(overlap)})")
+    elif anchor_side:
+        base = 0.55 * anchor_score + 0.25 * token_score + boost
+        reason = f"v3 anchor_only (anchor={anchor_hits[:2]}; tokens={len(overlap)})"
+    elif event_side:
+        base = 0.55 * event_score + 0.30 * token_score + boost
+        reason = f"v3 event_only (event={event_hits[:3]})"
+    else:
+        base = 0.8 * token_score
+        reason = "v3 token_fallback"
+    return round(min(1.0, base), 3), reason
+
+
 def relevance_filter(
     items: List[RWEItem],
     query: str,
     entities: Optional[list] = None,
     authoritative_sources: Optional[set] = None,
     min_score: float = 0.20,
+    intent=None,
 ) -> List[RWEItem]:
     """
     Semi-semantic relevance filter — respects the FULL intent of the query.
@@ -300,6 +496,11 @@ def relevance_filter(
 
     Backward compatible: ``entities`` and ``authoritative_sources`` default to
     None/empty so the call ``relevance_filter(items, query)`` still works.
+
+    QU-aware mode (V3): when ``intent`` is a valid ``RWEQueryIntent`` (built by
+    the query engine only under the HLEO_RWE_INTENT_SCORING feature flag), the
+    scoring uses the structured intent sides via ``_score_item_v3``. When
+    ``intent`` is None the behaviour is EXACTLY the V1 behaviour above.
     """
     q_tokens = _tokens(query)
     auth_sources = authoritative_sources or set()
@@ -313,6 +514,9 @@ def relevance_filter(
             it.match_reason = "no_signal"
         return items
 
+    # V3 side sets are precomputed once per call (deterministic, no LLM here).
+    v3_sides = merged_sides(intent, entities) if intent is not None else None
+
     kept: List[RWEItem] = []
     for it in items:
         # Authoritative = the source's own search is trusted (hardcoded set),
@@ -320,7 +524,10 @@ def relevance_filter(
         is_auth = it.source in _AUTHORITATIVE_SOURCES and (
             not auth_sources or it.source in auth_sources
         )
-        score, reason = _score_item(it, query, entities, is_auth)
+        if v3_sides is not None:
+            score, reason = _score_item_v3(it, query, v3_sides, is_auth)
+        else:
+            score, reason = _score_item(it, query, entities, is_auth)
         it.relevance_score = score
         it.match_reason = reason
         if score >= min_score:
@@ -503,11 +710,13 @@ class RWEPipeline:
         after = len(all_items)
 
         # ── 3. Semi-semantic relevance filtering ────────────────────────────
+        # intent is None unless the V3 feature flag built it → V1 behaviour.
         relevance_query = plan.translated_query or plan.original_query
         all_items = relevance_filter(
             all_items,
             relevance_query,
             entities=plan.entities,
+            intent=getattr(plan, "intent", None),
         )
         all_items.sort(key=lambda it: it.relevance_score, reverse=True)
 
