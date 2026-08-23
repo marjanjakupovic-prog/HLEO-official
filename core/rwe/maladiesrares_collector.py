@@ -89,12 +89,16 @@ class MaladiesRaresCollector:
 
     def __init__(self, forum_ids: Optional[List[int]] = None) -> None:
         self.forum_ids = forum_ids if forum_ids is not None else _FORUM_IDS
+        self._feed_cache: dict = {}
 
     def _meta(self) -> dict:
         return RWE_SOURCES[self.source]
 
     def _fetch_forum(self, forum_id: int, limit: int) -> Tuple[List[RWEItem], str, str]:
         """Fetch a single phpBB Atom feed and normalize entries."""
+        if forum_id in self._feed_cache:
+            items, status, reason = self._feed_cache[forum_id]
+            return items[:limit], status, reason
         url = f"{BASE_URL}/{forum_id}"
         try:
             resp = requests.get(url, timeout=self.timeout, headers={
@@ -150,14 +154,13 @@ class MaladiesRaresCollector:
                 privacy_status="redacted",  # author deliberately not carried
                 metadata={"forum_id": forum_id},
             ))
-            if len(items) >= limit:
-                break
-        return items, STATUS_OK, f"Retrieved {len(items)} {self.source} thread(s) from forum {forum_id}."
+        self._feed_cache[forum_id] = (items, STATUS_OK, f"Retrieved {len(items)} {self.source} thread(s) from forum {forum_id}.")
+        return items[:limit], STATUS_OK, f"Retrieved {len(items[:limit])} {self.source} thread(s) from forum {forum_id}."
 
     def search_with_status(
         self,
         query: str,
-        limit: int = 20,
+        limit: Optional[int] = None,
     ) -> Tuple[List[RWEItem], str, str]:
         """Fetch MaladiesRaresInfo Atom threads from the alopecia sub-forums.
 
@@ -171,15 +174,15 @@ class MaladiesRaresCollector:
         if not query.strip():
             return [], STATUS_NO_RESULTS, "Empty query."
 
-        per_forum = max(1, min(limit, 20))
+        target_limit = limit if limit is not None else 10**9
         all_items: List[RWEItem] = []
         statuses: List[str] = []
         reasons: List[str] = []
 
         for fid in self.forum_ids:
-            if len(all_items) >= limit:
+            if len(all_items) >= target_limit:
                 break
-            items, status, reason = self._fetch_forum(fid, max(1, limit - len(all_items)))
+            items, status, reason = self._fetch_forum(fid, 10**9)
             statuses.append(status)
             reasons.append(reason)
             if status == STATUS_OK:
@@ -198,9 +201,9 @@ class MaladiesRaresCollector:
                     return [], worst, r
             return [], worst, f"{self.source} collection failed."
 
-        return all_items[:limit], STATUS_OK, f"Retrieved {len(all_items)} {self.source} thread(s)."
+        return all_items if limit is None else all_items[:limit], STATUS_OK, f"Retrieved {len(all_items)} {self.source} thread(s)."
 
-    def search(self, query: str, limit: int = 20) -> List[RWEItem]:
+    def search(self, query: str, limit: Optional[int] = None) -> List[RWEItem]:
         """Silent-fail wrapper for pipeline use."""
         items, status, reason = self.search_with_status(query, limit=limit)
         if status != STATUS_OK:

@@ -100,6 +100,7 @@ class RWESearchResult(BaseModel):
     query: str
     original_query: str = ""            # verbatim user input (never overwritten)
     search_query: str                   # normalized/translated query sent to collectors
+    canonical_query: str = ""
     detected_language: str = "und"
     translated_query: str = ""          # English rendering of the original query
     translation_applied: bool = False

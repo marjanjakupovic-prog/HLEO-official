@@ -72,7 +72,7 @@ class HLEOPipeline:
                 # if it's a generic REST configuration, instantiate GenericRESTCollector
                 if collector_key in collector_map:
                     try:
-                        raw[r.source_id] = collector_map[collector_key].search(query, limit=20 if collector_key=="pubmed" else (15 if collector_key=="europepmc" else 10))
+                        raw[r.source_id] = collector_map[collector_key].search(query, limit=None)
                     except Exception:
                         logger.exception("Collector %s failed for query %s", collector_key, query)
                         raw[r.source_id] = []
@@ -80,7 +80,7 @@ class HLEOPipeline:
                     try:
                         from collectors.generic_rest import GenericRESTCollector
                         gen = GenericRESTCollector(r.connection_spec or {}, source_id=r.source_id, category=r.category)
-                        raw[r.source_id] = gen.search(query, limit=10)
+                        raw[r.source_id] = gen.search(query, limit=None)
                     except Exception:
                         logger.exception("GenericRESTCollector failed for %s", r.source_id)
                         raw[r.source_id] = []
@@ -89,21 +89,27 @@ class HLEOPipeline:
                     logger.warning("Unknown runtime_collector '%s' for source '%s'", collector_key, r.source_id)
                     raw[r.source_id] = []
         else:
-            # legacy behaviour
-            reddit_posts = self.collector.search(query, limit=10)
-            pubmed_articles = self.pubmed.search(query, limit=20)
-            europepmc_articles = self.europepmc.search(query, limit=15)
-            clinical_trials = self.clinicaltrials.search(query, limit=10)
-            raw = {
-                "reddit": reddit_posts,
-                "pubmed": pubmed_articles,
-                "europepmc": europepmc_articles,
-                "clinicaltrials": clinical_trials,
-            }
+            # legacy behaviour — one source failure must not fail the search
+            raw = {}
+            for key, collector in (
+                ("reddit", self.collector),
+                ("pubmed", self.pubmed),
+                ("europepmc", self.europepmc),
+                ("clinicaltrials", self.clinicaltrials),
+            ):
+                try:
+                    raw[key] = collector.search(query, limit=None)
+                except Exception:
+                    logger.exception("Collector %s failed for query %s", key, query)
+                    raw[key] = []
 
         # include reddit if not already present
         if "reddit" not in raw:
-            raw["reddit"] = self.collector.search(query, limit=10)
+            try:
+                raw["reddit"] = self.collector.search(query, limit=None)
+            except Exception:
+                logger.exception("Collector reddit failed for query %s", query)
+                raw["reddit"] = []
 
         # ── Cross-source deduplication (works over dynamic set of scientific keys) ──
         deduped, stats = _aggregator.deduplicate_across_sources(raw)

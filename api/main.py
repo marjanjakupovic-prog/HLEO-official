@@ -988,18 +988,44 @@ def list_experiences(
 @app.get("/rwe/search")
 def rwe_search(
     q: str = Query(..., description="RWE search query"),
-    limit: int = Query(15, ge=1, le=50),
+    limit: int = Query(30, ge=1, le=400),
+    page: int = Query(1, ge=1),
+    search_id: Optional[str] = Query(None),
     sources: Optional[str] = Query(
         None, description="Comma-separated subset: reddit,openfda_faers,calvizie,hairlosstalk,hairlossexperiences,maladiesrares"
     ),
 ):
-    """Run the RWE pipeline. Returns normalized RWE items with provenance."""
+    """Run RWE once, then serve cached final results in pages of 30."""
     from core.rwe.pipeline import RWEPipeline
+    from core.temp_store import temp_store
 
-    pipe = RWEPipeline()
-    src_list = [s.strip() for s in sources.split(",")] if sources else None
-    result = pipe.search(q, limit=limit, sources=src_list)
-    return result.model_dump()
+    page_size = 30
+    cached = temp_store.get(search_id) if search_id else None
+    if cached is None:
+        src_list = [s.strip() for s in sources.split(",")] if sources else None
+        result = RWEPipeline().search(q, limit=400, sources=src_list)
+        body = result.model_dump()
+        search_id = str(uuid.uuid4())
+        temp_store.set(search_id, body)
+        body = dict(body)  # page on a copy; cache keeps the full result
+    else:
+        body = dict(cached)
+
+    all_items = body.get("items", [])[:400]
+    total = len(all_items)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    start = (page - 1) * page_size
+    body["items"] = all_items[start:start + page_size]
+    body["pagination"] = {
+        "search_id": search_id,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": pages,
+        "max_results": 400,
+    }
+    return body
 
 
 # ── FASE 13-14: RWE Profiles + Testimonianze ────────────────────────────────

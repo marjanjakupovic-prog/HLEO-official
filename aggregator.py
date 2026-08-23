@@ -177,6 +177,18 @@ class HLEOAggregator:
 
         retrieved = len(tagged)
 
+        def merge_provenance(winner, duplicate) -> None:
+            winner.metadata = dict(getattr(winner, "metadata", {}) or {})
+            duplicate_metadata = getattr(duplicate, "metadata", {}) or {}
+            queries = winner.metadata.setdefault("matched_queries", [])
+            for query in duplicate_metadata.get("matched_queries", []):
+                if query not in queries:
+                    queries.append(query)
+            provenance = winner.metadata.setdefault("match_provenance", [])
+            for entry in duplicate_metadata.get("match_provenance", []):
+                if entry not in provenance:
+                    provenance.append(entry)
+
         # key → (source_name, article, score)
         winners: dict[str, tuple[str, object, float]] = {}
         duplicate_keys: list[tuple[str, str, str]] = []  # (key, loser_src, winner_src)
@@ -203,11 +215,13 @@ class HLEOAggregator:
                 if score > win_score or (
                     score == win_score and src_priority < win_priority
                 ):
-                    # Current article is better — demote the old winner
+                    # Current article is better — demote the old winner.
+                    merge_provenance(art, win_art)
                     duplicate_keys.append((key, win_src, src))
                     winners[key] = (src, art, score)
                 else:
-                    # Existing winner is better — discard current
+                    # Existing winner is better — discard current.
+                    merge_provenance(win_art, art)
                     duplicate_keys.append((key, src, win_src))
 
         # Rebuild per-source lists (winners + keyless survivors)

@@ -39,7 +39,7 @@ class OpenFDACollector:
     def search_with_status(
         self,
         query: str,
-        limit: int = 20,
+        limit: Optional[int] = None,
     ) -> Tuple[List[RWEItem], str, str]:
         """
         Search FAERS adverse events for a drug/term.
@@ -58,33 +58,40 @@ class OpenFDACollector:
             f'patient.drug.openfda.generic_name:"{term}" '
             f'OR patient.reaction.reactionmeddrapt:"{term}"'
         )
-        params = {
-            "search": search_expr,
-            "limit": max(1, min(limit, 100)),
-        }
-        if self.api_key:
-            params["api_key"] = self.api_key
-
-        try:
-            resp = requests.get(BASE_URL, params=params, timeout=self.timeout)
-        except requests.exceptions.RequestException as exc:
-            logger.warning(f"openFDA network error: {exc}")
-            return [], STATUS_NETWORK_ERROR, str(exc)
-
-        if resp.status_code == 429:
-            return [], STATUS_RATE_LIMITED, "openFDA rate limit reached. Retry later."
-        if resp.status_code == 404:
-            # openFDA returns 404 when no results match
-            return [], STATUS_NO_RESULTS, f"No FAERS reports matched '{query}'."
-        if resp.status_code != 200:
-            return [], STATUS_NETWORK_ERROR, f"openFDA HTTP {resp.status_code}."
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            return [], STATUS_NETWORK_ERROR, f"openFDA JSON parse error: {exc}"
-
-        results = data.get("results") or []
+        import os
+        target = limit if limit is not None else int(
+            os.environ.get("HLEO_OPENFDA_MAX_RESULTS", "1000"))
+        page_size = max(1, min(target, 100))
+        results = []
+        skip = 0
+        while len(results) < target:
+            params = {"search": search_expr, "limit": page_size, "skip": skip}
+            if self.api_key:
+                params["api_key"] = self.api_key
+            try:
+                resp = requests.get(BASE_URL, params=params, timeout=self.timeout)
+            except requests.exceptions.RequestException as exc:
+                logger.warning(f"openFDA network error: {exc}")
+                return [], STATUS_NETWORK_ERROR, str(exc)
+            if resp.status_code == 429:
+                return [], STATUS_RATE_LIMITED, "openFDA rate limit reached. Retry later."
+            if resp.status_code == 404:
+                if not results:
+                    return [], STATUS_NO_RESULTS, f"No FAERS reports matched '{query}'."
+                break
+            if resp.status_code != 200:
+                return [], STATUS_NETWORK_ERROR, f"openFDA HTTP {resp.status_code}."
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                return [], STATUS_NETWORK_ERROR, f"openFDA JSON parse error: {exc}"
+            batch = data.get("results") or []
+            results.extend(batch)
+            if limit is not None or not batch or len(batch) < page_size:
+                break
+            skip += len(batch)
+        if limit is not None:
+            results = results[:limit]
         if not results:
             return [], STATUS_NO_RESULTS, f"No FAERS reports matched '{query}'."
 
@@ -156,7 +163,7 @@ class OpenFDACollector:
 
         return items, STATUS_OK, f"Retrieved {len(items)} FAERS report(s)."
 
-    def search(self, query: str, limit: int = 20) -> List[RWEItem]:
+    def search(self, query: str, limit: Optional[int] = None) -> List[RWEItem]:
         """Silent-fail wrapper for pipeline use."""
         items, status, reason = self.search_with_status(query, limit=limit)
         if status != STATUS_OK:

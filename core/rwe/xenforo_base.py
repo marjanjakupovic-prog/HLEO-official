@@ -113,6 +113,7 @@ class XenForoRSSCollector:
     def __init__(self, forum_slugs: Optional[List[str]] = None) -> None:
         if forum_slugs is not None:
             self.forum_slugs = forum_slugs
+        self._feed_cache: dict = {}
         # forum_slugs must be declared on the subclass as a class attribute.
 
     def _meta(self) -> dict:
@@ -121,6 +122,12 @@ class XenForoRSSCollector:
 
     def _fetch_forum(self, slug: str, limit: int) -> Tuple[List[RWEItem], str, str]:
         """Fetch a single forum's RSS feed and normalize items."""
+        cache = getattr(self, "_feed_cache", None)
+        if cache is None:
+            cache = self._feed_cache = {}
+        if slug in cache:
+            items, status, reason = cache[slug]
+            return items[:limit], status, reason
         url = f"{self.base_url}/{slug}/index.rss"
         try:
             resp = requests.get(url, timeout=self.timeout, headers={
@@ -148,7 +155,8 @@ class XenForoRSSCollector:
 
         items: List[RWEItem] = []
         meta = self._meta()
-        for entry in channel.findall("item"):
+        entries = channel.findall("item")
+        for entry in entries:
             title = (entry.findtext("title") or "").strip()
             link = (entry.findtext("link") or "").strip()
             guid = (entry.findtext("guid") or "").strip()
@@ -179,10 +187,11 @@ class XenForoRSSCollector:
                     "comments": _safe_int(entry.findtext("slash:comments", namespaces=_NS)),
                 },
             ))
-            if len(items) >= limit:
-                break
-        return items, STATUS_OK, (
+        cache[slug] = (items, STATUS_OK, (
             f"Retrieved {len(items)} {self.source} thread(s) from {slug.split('.')[0]}."
+        ))
+        return items[:limit], STATUS_OK, (
+            f"Retrieved {len(items[:limit])} {self.source} thread(s) from {slug.split('.')[0]}."
         )
 
     def search_with_status(
@@ -204,15 +213,15 @@ class XenForoRSSCollector:
         if not query.strip():
             return [], STATUS_NO_RESULTS, "Empty query."
 
-        per_forum = max(1, min(limit, 20))
+        target_limit = limit if limit is not None else 10**9
         all_items: List[RWEItem] = []
         statuses: List[str] = []
         reasons: List[str] = []
 
         for slug in self.forum_slugs:
-            if len(all_items) >= limit:
+            if len(all_items) >= target_limit:
                 break
-            items, status, reason = self._fetch_forum(slug, max(1, limit - len(all_items)))
+            items, status, reason = self._fetch_forum(slug, 10**9)
             statuses.append(status)
             reasons.append(reason)
             if status == STATUS_OK:
@@ -229,7 +238,7 @@ class XenForoRSSCollector:
                 agg_reason = _best_reason(statuses, reasons, agg)
             return [], agg, agg_reason
 
-        return all_items[:limit], STATUS_OK, f"Retrieved {len(all_items)} {self.source} thread(s)."
+        return all_items if limit is None else all_items[:limit], STATUS_OK, f"Retrieved {len(all_items)} {self.source} thread(s)."
 
     def search(self, query: str, limit: int = 20) -> List[RWEItem]:
         """Silent-fail wrapper for pipeline use."""

@@ -543,23 +543,41 @@ def relevance_filter(
 # ─── Deduplication ──────────────────────────────────────────────────────────
 
 def deduplicate(items: List[RWEItem]) -> List[RWEItem]:
-    """
-    Deduplicate by source + external_id (or source_url as fallback).
-
-    When the same item is surfaced by multiple expanded queries, the copy with
-    the highest relevance_score is kept (so the best matched_query provenance
-    survives).
-    """
+    """Union duplicate records while retaining every query provenance."""
     best: dict = {}
     order: List = []
     for it in items:
         key = (it.source, it.external_id or it.source_url or it.title)
+        prov = {
+            "matched_query": it.matched_query,
+            "matched_query_type": it.matched_query_type,
+            "source_language": it.source_language,
+            "original_term": (it.metadata or {}).get("original_term"),
+            "expanded_term": (it.metadata or {}).get("expanded_term"),
+            "match_kind": (it.metadata or {}).get("match_kind"),
+            "tier": (it.metadata or {}).get("tier"),
+            "provider": (it.metadata or {}).get("provider"),
+            "source_entity": (it.metadata or {}).get("source_entity"),
+            "query_origin": (it.metadata or {}).get("query_origin"),
+        }
         if key not in best:
             best[key] = it
             order.append(key)
-        else:
-            if (it.relevance_score or 0.0) > (best[key].relevance_score or 0.0):
-                best[key] = it
+            it.metadata = dict(it.metadata or {})
+            it.metadata["matched_queries"] = [it.matched_query] if it.matched_query else []
+            it.metadata["match_provenance"] = [prov]
+            continue
+        winner = best[key]
+        winner.metadata = dict(winner.metadata or {})
+        queries = winner.metadata.setdefault("matched_queries", [])
+        if it.matched_query and it.matched_query not in queries:
+            queries.append(it.matched_query)
+        provenance = winner.metadata.setdefault("match_provenance", [])
+        if prov not in provenance:
+            provenance.append(prov)
+        if (it.relevance_score or 0.0) > (winner.relevance_score or 0.0):
+            it.metadata = winner.metadata
+            best[key] = it
     return [best[k] for k in order]
 
 
@@ -717,14 +735,20 @@ class RWEPipeline:
             relevance_query,
             entities=plan.entities,
             intent=getattr(plan, "intent", None),
+            min_score=0.20,
         )
         all_items.sort(key=lambda it: it.relevance_score, reverse=True)
+        relevant_before_cap = len(all_items)
+        all_items = all_items[:400]
 
         totals = {
             "retrieved": before,
             "deduped_removed": before - after,
             "unique": after,
-            "relevant": len(all_items),
+            "relevant": relevant_before_cap,
+            "final": len(all_items),
+            "score_threshold": 0.20,
+            "max_results": 400,
             "queries_used": len(plan.expanded_queries),
         }
 
@@ -732,6 +756,7 @@ class RWEPipeline:
             query=query,
             original_query=plan.original_query,
             search_query=relevance_query,
+            canonical_query=plan.canonical_query,
             detected_language=plan.detected_language,
             translated_query=plan.translated_query,
             translation_applied=plan.translation_applied,
@@ -759,14 +784,30 @@ class RWEPipeline:
         """
         collected: List[RWEItem] = []
         statuses: List[str] = []
-        seen_ids: set = set()
 
-        for eq in plan.expanded_queries:
-            if len(collected) >= cap:
-                break
+        # Forum-feed collectors (XenForo RSS / phpBB Atom) are not full-text
+        # searchable: every query re-fetches the same feed. Send them only the
+        # primary queries (original/translated/canonical); full-text APIs
+        # (openFDA, Reddit) receive the complete expansion set.
+        from core.rwe.xenforo_base import XenForoRSSCollector
+        from core.rwe.maladiesrares_collector import MaladiesRaresCollector
+        feed_like = isinstance(collector, (XenForoRSSCollector, MaladiesRaresCollector))
+        if feed_like:
+            primary_types = {"original", "translated", "canonical"}
+            queries = [eq for eq in plan.expanded_queries
+                       if eq.expansion_type in primary_types] or plan.expanded_queries[:1]
+        else:
+            # Server-side search APIs (openFDA, Reddit) execute one request
+            # per query; bound the number of distinct queries sent to keep
+            # latency and rate limits healthy while still using the
+            # vocabulary expansions. Original/translated/canonical rank first
+            # in the plan ordering.
+            queries = plan.expanded_queries[:6]
+
+        for eq in queries:
             try:
                 items, status, reason = collector.search_with_status(
-                    eq.query, limit=max(1, cap - len(collected))
+                    eq.query, limit=None
                 )
             except Exception as exc:
                 logger.warning(f"RWE collector {name} failed for '{eq.query}': {exc}")
@@ -776,17 +817,21 @@ class RWEPipeline:
             if status != "ok":
                 continue
             for it in items:
-                key = (it.source, it.external_id or it.source_url)
-                if key in seen_ids:
-                    continue
-                seen_ids.add(key)
                 it.matched_query = eq.query
                 it.matched_query_type = eq.expansion_type
                 it.source_language = eq.source_language
                 it.topic = eq.query
+                it.metadata = dict(it.metadata or {})
+                it.metadata.update({
+                    "original_term": eq.original_term,
+                    "expanded_term": eq.expanded_term,
+                    "match_kind": eq.match_kind,
+                    "tier": eq.tier,
+                    "provider": eq.provider,
+                    "source_entity": eq.source_entity,
+                    "query_origin": eq.query_origin,
+                })
                 collected.append(it)
-                if len(collected) >= cap:
-                    break
 
         # Aggregate: prefer ok > no_results > no_credentials > error
         status_rank = {

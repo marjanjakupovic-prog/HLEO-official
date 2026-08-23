@@ -1,4 +1,5 @@
 import requests
+from typing import Optional
 
 from core.search_result import SearchResult
 
@@ -6,18 +7,30 @@ from core.search_result import SearchResult
 class ClinicalTrialsCollector:
     API_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-    def search(self, query: str, limit: int = 5):
-        r = requests.get(
-            self.API_URL,
-            params={"query.term": query, "pageSize": limit,
-                    "fields": "NCTId,BriefTitle,BriefSummary,DetailedDescription,"
-                              "OverallStatus,Condition,InterventionName,"
-                              "Phase,EnrollmentCount,PrimaryOutcomeMeasure,"
-                              "StartDate,PrimaryCompletionDate,LeadSponsorName"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        studies = r.json().get("studies", [])
+    def search(self, query: str, limit: Optional[int] = None):
+        target = limit if limit is not None else 400
+        page_size = max(1, min(target, 100))
+        fields = ("NCTId,BriefTitle,BriefSummary,DetailedDescription,"
+                  "OverallStatus,Condition,InterventionName,Phase,EnrollmentCount,"
+                  "PrimaryOutcomeMeasure,StartDate,PrimaryCompletionDate,LeadSponsorName")
+        studies = []
+        token = None
+        while len(studies) < target:
+            params = {"query.term": query, "pageSize": page_size, "fields": fields}
+            if token:
+                params["pageToken"] = token
+            r = requests.get(self.API_URL, params=params, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            batch = data.get("studies", []) or []
+            studies.extend(batch)
+            if limit is not None or not batch:
+                break
+            token = data.get("nextPageToken")
+            if not token:
+                break
+        if limit is not None:
+            studies = studies[:limit]
 
         results = []
         for study in studies:

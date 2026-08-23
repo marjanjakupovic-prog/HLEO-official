@@ -58,6 +58,7 @@ MAX_SYNONYMS_PER_ENTITY = 3        # keep expansion controlled & leave room for
 # Expansion type tags — carried as provenance on every expanded query.
 EXP_ORIGINAL   = "original"
 EXP_TRANSLATED = "translated"
+EXP_CANONICAL  = "canonical"
 EXP_SYNONYM    = "synonym"
 EXP_MESH       = "mesh"
 EXP_NEIGHBOR   = "neighbor"
@@ -103,6 +104,13 @@ class ExpandedQuery:
     expansion_type: str          # EXP_* constant
     source_language: str = "en"  # language of this query string
     matched_entities: list = field(default_factory=list)  # canonical names
+    original_term: str = ""
+    expanded_term: str = ""
+    match_kind: Optional[str] = None
+    tier: Optional[float] = None
+    provider: Optional[str] = None
+    source_entity: Optional[str] = None
+    query_origin: str = "user"
 
 
 @dataclass
@@ -118,7 +126,9 @@ class RWEQueryPlan:
     detected_language: str
     translated_query: str
     translation_applied: bool
+    canonical_query: str = ""
     entities: list = field(default_factory=list)        # (type, canonical, conf)
+    vocabulary: dict = field(default_factory=dict)
     expanded_queries: List[ExpandedQuery] = field(default_factory=list)
     # QU-aware relevance (V3): structured intent, built ONLY when the
     # HLEO_RWE_INTENT_SCORING feature flag is on; None = pure V1 behaviour.
@@ -150,6 +160,13 @@ class RWEQueryPlan:
                     "expansion_type": eq.expansion_type,
                     "source_language": eq.source_language,
                     "matched_entities": eq.matched_entities,
+                    "original_term": eq.original_term,
+                    "expanded_term": eq.expanded_term,
+                    "match_kind": eq.match_kind,
+                    "tier": eq.tier,
+                    "provider": eq.provider,
+                    "source_entity": eq.source_entity,
+                    "query_origin": eq.query_origin,
                 }
                 for eq in self.expanded_queries
             ],
@@ -285,41 +302,97 @@ class RWEQueryEngine:
             or translated.lower() != q.lower()
         )
 
-        # ── 4. Intent / entity recognition (KB hybrid lookup) ───────────────
-        # Look up entities on BOTH the prepared/translated English text and the
-        # original (Italian aliases are indexed too). Merge best confidence.
+        # ── 4. Canonicalization (the translated representation remains intact)
         entities = self._recognize_entities(translated, q)
+        canonical = self._canonicalize(translated, entities)
 
-        # ── 5. Controlled query expansion ───────────────────────────────────
+        # ── 5. Vocabulary resolution, once per canonical entity ─────────────
+        # This is deliberately before expansion and retrieval.  ``None`` means
+        # the feature is off: no provider is instantiated or queried.
+        vocabulary = {}
+        resolutions = {}
+        from core.vocab.resolver import build_resolver_from_env
+        resolver = build_resolver_from_env()
+        if resolver is not None:
+            terms = list(dict.fromkeys([c for _, c, _ in entities]))
+            resolutions = resolver.resolve_terms(terms, language=lang)
+            vocabulary = self._slim_vocabulary(resolutions)
+            entities = self._enrich_entities(entities, resolutions)
+
+        # ── 6. Controlled query expansion (now consumes vocabulary evidence)
         expanded = self._expand(
             original=q,
             translated=translated,
+            canonical_query=canonical,
             prepared=prepared,
             lang=lang,
             entities=entities,
+            resolutions=resolutions,
         )
 
-        # ── 6. QU intent for the QU-aware relevance scorer (V3) ─────────────
-        # Feature-flagged: when disabled, intent stays None and the pipeline
-        # behaves exactly like V1 (no LLM call, no behaviour change).
+        # ── 7. QU intent for the existing V3 relevance scorer ────────────────
         intent = None
         if intent_scoring_enabled():
-            # External vocabulary evidence is a SECOND, independent flag;
-            # build_resolver_from_env() returns None when HLEO_VOCAB_ENABLED
-            # is off, so the intent is built exactly as before.
-            from core.vocab.resolver import build_resolver_from_env
-            intent = build_intent(translated, q, entities, use_llm=True,
-                                  resolver=build_resolver_from_env())
+            intent = build_intent(translated, q, entities, use_llm=True)
+            if vocabulary:
+                intent.vocabulary = vocabulary
 
         return RWEQueryPlan(
             original_query=q,
             detected_language=lang,
             translated_query=translated,
             translation_applied=translation_applied,
+            canonical_query=canonical,
             entities=entities,
+            vocabulary=vocabulary,
             expanded_queries=expanded,
             intent=intent,
         )
+
+    @staticmethod
+    def _canonicalize(translated: str, entities: list) -> str:
+        """Return a canonical representation without mutating translation."""
+        out = translated
+        dictionaries = (DRUG_ALIASES, CONDITION_ALIASES, SYMPTOM_ALIASES)
+        for _etype, canonical, _ in entities:
+            aliases = [canonical]
+            for mapping in dictionaries:
+                aliases.extend(mapping.get(canonical, []))
+            for alias in sorted(set(aliases), key=len, reverse=True):
+                if alias and alias.lower() != canonical.lower():
+                    out = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", canonical,
+                                 out, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", out).strip()
+
+    @staticmethod
+    def _slim_vocabulary(resolutions: dict) -> dict:
+        return {
+            term: [m.model_dump() for m in resolution.matches]
+            for term, resolution in resolutions.items()
+            if resolution.matches
+        }
+
+    @staticmethod
+    def _enrich_entities(entities: list, resolutions: dict) -> list:
+        """Use provider semantic groups as typed evidence, never replacement."""
+        out = list(entities)
+        known = {canonical for _, canonical, _ in out}
+        group_types = {"drug": "drug", "condition": "condition", "symptom": "symptom"}
+        for _term, resolution in resolutions.items():
+            for match in resolution.matches:
+                etype = group_types.get(match.semantic_group)
+                canonical = match.preferred_term.strip().lower()
+                if etype and canonical and canonical not in known:
+                    out.append((etype, canonical, match.confidence))
+                    known.add(canonical)
+        return out
+
+    @staticmethod
+    def _replace_entity(text: str, original: str, replacement: str) -> str:
+        """Replace one anchored entity, retaining the remaining query context."""
+        replaced = re.sub(rf"(?<!\w){re.escape(original)}(?!\w)", replacement,
+                          text, count=1, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", replaced).strip()
 
     # ── Entity recognition ───────────────────────────────────────────────────
 
@@ -349,9 +422,11 @@ class RWEQueryEngine:
         self,
         original: str,
         translated: str,
+        canonical_query: str,
         prepared: str,
         lang: str,
         entities: list,
+        resolutions: Optional[dict] = None,
     ) -> List[ExpandedQuery]:
         """
         Build the controlled set of expanded queries.
@@ -370,6 +445,9 @@ class RWEQueryEngine:
             expansion_type=EXP_ORIGINAL,
             source_language=lang,
             matched_entities=canonical_names,
+            original_term=original,
+            expanded_term=original,
+            query_origin="user",
         ))
         if translated.lower() != original.lower():
             queries.append(ExpandedQuery(
@@ -377,6 +455,19 @@ class RWEQueryEngine:
                 expansion_type=EXP_TRANSLATED,
                 source_language="en",
                 matched_entities=canonical_names,
+                original_term=original,
+                expanded_term=translated,
+                query_origin="translation",
+            ))
+        if canonical_query and canonical_query.lower() not in {original.lower(), translated.lower()}:
+            queries.append(ExpandedQuery(
+                query=canonical_query,
+                expansion_type=EXP_CANONICAL,
+                source_language="en",
+                matched_entities=canonical_names,
+                original_term=original,
+                expanded_term=canonical_query,
+                query_origin="canonicalization",
             ))
 
         if not entities:
@@ -398,35 +489,83 @@ class RWEQueryEngine:
                 for alias in alias_dict[canonical][:MAX_SYNONYMS_PER_ENTITY]:
                     if len(alias.split()) <= 4:
                         queries.append(ExpandedQuery(
-                            query=alias,
+                            query=self._replace_entity(canonical_query := (canonical_query or translated), canonical, alias),
                             expansion_type=EXP_SYNONYM,
                             source_language="en",
                             matched_entities=[canonical],
+                            original_term=canonical,
+                            expanded_term=alias,
+                            match_kind="synonym",
+                            tier=0.9,
+                            source_entity=canonical,
+                            query_origin="kb",
                         ))
 
         # ── C: MeSH terms ──────────────────────────────────────────────────
         for etype, canonical, _ in entities:
             for mesh in get_mesh_terms(canonical):
                 queries.append(ExpandedQuery(
-                    query=mesh,
+                    query=self._replace_entity(canonical_query or translated, canonical, mesh),
                     expansion_type=EXP_MESH,
                     source_language="en",
                     matched_entities=[canonical],
+                    original_term=canonical,
+                    expanded_term=mesh,
+                    match_kind="concept",
+                    tier=0.6,
+                    source_entity=canonical,
+                    query_origin="kb",
                 ))
+
+        # ── B2: external vocabulary terms used for real retrieval ──────────
+        # Expand one entity at a time, preserving all other query context. A
+        # related concept is deliberately not lexicalized as a synonym.
+        from core.vocab.models import MATCH_TIERS
+        for _etype, source_entity, _ in entities:
+            resolution = (resolutions or {}).get(source_entity)
+            if resolution is None:
+                continue
+            for match in resolution.matches:
+                tier = MATCH_TIERS.get(match.match_kind)
+                if tier is None:
+                    continue
+                for term in [match.preferred_term, *match.synonyms]:
+                    term = (term or "").strip()
+                    if len(term) < 3 or term.lower() == source_entity.lower():
+                        continue
+                    base = canonical_query or translated or original
+                    expanded_query = self._replace_entity(base, source_entity, term)
+                    if expanded_query == base:
+                        expanded_query = " ".join(
+                            [term] + [c for _, c, _ in entities if c != source_entity]
+                        )
+                    queries.append(ExpandedQuery(
+                        query=expanded_query,
+                        expansion_type=(EXP_SYNONYM if match.match_kind == "synonym"
+                                        else match.match_kind),
+                        source_language=match.language or "en",
+                        matched_entities=[source_entity],
+                        original_term=source_entity,
+                        expanded_term=term,
+                        match_kind=match.match_kind,
+                        tier=tier,
+                        provider=match.provider,
+                        source_entity=source_entity,
+                        query_origin="vocabulary",
+                    ))
 
         # ── D: Knowledge graph neighbours (1-hop, anchored) ────────────────
         all_known = (
             set(DRUG_ALIASES) | set(CONDITION_ALIASES) | set(SYMPTOM_ALIASES)
         )
-        for etype, canonical, _ in entities:
-            neighbors = get_neighbors(canonical, depth=1) & all_known
+        for _etype, entity_name, _ in entities:
+            neighbors = get_neighbors(entity_name, depth=1) & all_known
             for neighbor in neighbors:
-                # combo: primary entity + neighbour (keeps scope tight)
                 queries.append(ExpandedQuery(
-                    query=f"{canonical} {neighbor}",
+                    query=f"{entity_name} {neighbor}",
                     expansion_type=EXP_NEIGHBOR,
                     source_language="en",
-                    matched_entities=[canonical, neighbor],
+                    matched_entities=[entity_name, neighbor],
                 ))
 
         # ── E: Entity combos (drug + symptom / drug + condition) ───────────
@@ -497,9 +636,12 @@ class RWEQueryEngine:
             unique.append(eq)
 
         tier_order = {
-            EXP_ORIGINAL: 0, EXP_TRANSLATED: 1,
+            EXP_ORIGINAL: 0, EXP_TRANSLATED: 1, EXP_CANONICAL: 1,
             EXP_SYNONYM: 2, EXP_MESH: 2, EXP_COMBO: 2,
-            EXP_COLLOQUIAL: 3, EXP_NEIGHBOR: 4, EXP_LLM: 5,
+            "preferred": 2, "translation": 2, "abbreviation": 2,
+            "orthographic_variant": 2, "normalized": 2,
+            "colloquial": 3, "slang": 3, "concept": 4,
+            EXP_COLLOQUIAL: 3, EXP_NEIGHBOR: 5, EXP_LLM: 6,
         }
         ent_lower = {n.lower() for n in entity_names}
 
