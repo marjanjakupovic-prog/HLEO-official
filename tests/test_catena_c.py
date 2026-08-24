@@ -242,6 +242,38 @@ def test_no_per_source_truncation_before_ranking(monkeypatch):
     assert len(out["clinicaltrials"]) > 10
 
 
+
+
+def test_scientific_relation_bonus_prefers_relation_specific_paper(monkeypatch):
+    relation = ClinicalRelation(
+        original_query="minoxidil hypertrichosis",
+        agent={"term": "minoxidil", "normalized": "minoxidil",
+               "role": "drug", "search_terms": ["minoxidil"]},
+        event={"term": "", "normalized": ""},
+        manifestation={"term": "hypertrichosis", "normalized": "hypertrichosis",
+                       "role": "adverse_effect", "search_terms": ["hypertrichosis"]},
+        relation_type="adverse_effect",
+        scientific_query="minoxidil hypertrichosis",
+    )
+
+    def by_query(query, source):
+        return [
+            _article("Minoxidil overview",
+                     "General discussion of minoxidil use in alopecia.",
+                     source, year=2024),
+            _article("Minoxidil hypertrichosis report",
+                     "After minoxidil use, hypertrichosis appeared on the arms.",
+                     source, year=2024),
+        ]
+
+    rs, _ = _search_with_stubs(monkeypatch, by_query, judge_score=0.8)
+    monkeypatch.setattr(RelationalSearch, "_extract_relation", lambda self, q: relation)
+    out = rs.search("minoxidil hypertrichosis")
+    assert out is not None
+    flat = [item for src in ("pubmed", "europepmc", "clinicaltrials") for item in out[src]]
+    assert len(flat) >= 2
+    assert flat[0].title == "Minoxidil hypertrichosis report"
+
 # ── 6. RWE endpoint pagination (30 per page, cached) ────────────────────────
 
 def test_rwe_endpoint_pagination(client):

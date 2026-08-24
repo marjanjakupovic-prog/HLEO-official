@@ -351,6 +351,27 @@ def test_v3_provenance_fields_stamped():
     assert v3[0].match_reason and "anchor" in v3[0].match_reason
 
 
+
+def test_v3_testimonial_bonus_prefers_direct_experience():
+    intent = RWEQueryIntent(interventions=["minoxidil"], outcomes=["hypertrichosis"],
+                            source="llm", confidence=1.0)
+    items = [
+        _item("hairlosstalk", "My minoxidil experience",
+              "I started minoxidil and after two weeks I got hypertrichosis on my arms.",
+              treatment="minoxidil"),
+        _item("hairlosstalk", "Minoxidil side effect thread",
+              "Minoxidil hypertrichosis discussed as a side effect.",
+              treatment="minoxidil"),
+    ]
+    v3 = relevance_filter(items, "minoxidil hypertrichosis",
+                          entities=[("drug", "minoxidil", 0.9)], intent=intent)
+    assert [i.title for i in v3][:2] == [
+        "My minoxidil experience",
+        "Minoxidil side effect thread",
+    ]
+    assert v3[0].relevance_score > v3[1].relevance_score
+
+
 # ── Anti-circularity: V3 must not depend on any benchmark judge ─────────────
 
 def test_no_benchmark_or_judge_dependency_in_production_modules():

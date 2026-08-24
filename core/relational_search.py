@@ -277,13 +277,16 @@ class RelationalSearch:
         candidates = self._deduplicate_scientific(raw)
         stats["candidates_deduped"] = len(candidates)
         grouped = self._split_scientific(candidates)
-        grouped = {source: self._hard_filter(items, rel)
-                   for source, items in grouped.items()}
         candidates = [item for items in grouped.values() for item in items]
+        stats["after_soft_relation_pass"] = len(candidates)
         stats["after_hard_filter"] = len(candidates)
+        stats["hard_filter_applied"] = False
 
         from core.ranker import clinical_rank
-        candidates.sort(key=clinical_rank, reverse=True)
+        candidates.sort(
+            key=lambda item: clinical_rank(item) + (self._relation_bonus(item, rel)[0] * 100.0),
+            reverse=True,
+        )
         judged_count = 0
         remaining = candidates
         while remaining and judged_count < len(candidates) and judged_count < 400:
@@ -441,6 +444,79 @@ class RelationalSearch:
                 out[key].append(item)
         return out
 
+    @staticmethod
+    def _relation_bonus(item, rel: ClinicalRelation) -> Tuple[float, list[str]]:
+        """Small additive bonus that keeps scientific ranking relation-aware."""
+        text = f"{getattr(item, 'title', '') or ''} {getattr(item, 'abstract', '') or ''}".lower()
+        relation_type = str(getattr(rel, "relation_type", "") or "").lower().strip()
+        bonus = 0.0
+        reasons: list[str] = []
+
+        def _hits(terms: list[str]) -> list[str]:
+            return sorted({t for t in terms if t and t.lower() in text})[:6]
+
+        agent_terms = []
+        manifest_terms = []
+        for side, target in ((rel.agent, agent_terms), (rel.manifestation, manifest_terms)):
+            if isinstance(side, dict):
+                for key in ("term", "normalized"):
+                    val = str(side.get(key) or "").strip().lower()
+                    if val:
+                        target.append(val)
+                for key in ("search_terms",):
+                    for val in side.get(key) or []:
+                        sval = str(val or "").strip().lower()
+                        if sval:
+                            target.append(sval)
+
+        agent_hits = _hits(agent_terms)
+        if agent_hits:
+            bonus += min(0.05, 0.02 * len(agent_hits))
+            reasons.append(f"agent={agent_hits[:3]}")
+
+        manifest_hits = _hits(manifest_terms)
+        if manifest_hits:
+            bonus += min(0.08, 0.03 * len(manifest_hits))
+            reasons.append(f"manifestation={manifest_hits[:3]}")
+
+        phrase_hits = _hits([str(p).lower() for p in (rel.relation_phrases or [])])
+        if phrase_hits:
+            bonus += min(0.05, 0.02 * len(phrase_hits))
+            reasons.append(f"phrase={phrase_hits[:2]}")
+
+        relation_cues = {
+            "adverse_effect": {
+                "adverse effect", "side effect", "safety", "tolerability",
+                "hypertrichosis", "shedding", "alopecia", "rash", "edema",
+                "irritation", "pustulosis", "exanthematous", "pruritus",
+            },
+            "efficacy": {
+                "efficacy", "effectiveness", "improve", "improvement",
+                "response", "regrowth", "regrew", "worked", "helped",
+                "treatment", "therapeutic", "benefit",
+            },
+            "comparison": {
+                "versus", "comparison", "compared", "compare", "network meta-analysis",
+                "head-to-head", "noninferiority", "randomized", "randomised",
+            },
+            "exposure_outcome": {
+                "following", "due to", "caused", "triggered", "after",
+                "secondary to", "resulted in",
+            },
+        }
+        cue_hits = _hits(list(relation_cues.get(relation_type, set())))
+        if cue_hits:
+            bonus += min(0.06, 0.02 * len(cue_hits))
+            reasons.append(f"relation={cue_hits[:3]}")
+
+        if relation_type in {"adverse_effect", "efficacy", "comparison", "exposure_outcome"}:
+            if agent_hits and manifest_hits:
+                bonus += 0.03
+                reasons.append("agent+relation")
+
+        return round(min(0.20, bonus), 3), reasons
+
+
     def _deduplicate_scientific(self, raw: dict) -> list:
         aggregator = HLEOAggregator()
         deduped, _stats = aggregator.deduplicate_across_sources(raw)
@@ -584,12 +660,17 @@ class RelationalSearch:
         # Combine: judge score dominates; clinical_rank breaks ties.
         # Combined score = score*1000 + clinical_rank so judge ordering wins.
         for art, j in zip(pool, judgements):
-            jscore = float(j.get("score", 0.0))
-            combined = jscore * 1000.0 + clinical_rank(art)
+            raw_score = float(j.get("score", 0.0))
+            relation_bonus, relation_reasons = self._relation_bonus(art, rel)
+            final_score = min(1.0, max(0.0, raw_score + relation_bonus))
+            combined = final_score * 1000.0 + clinical_rank(art) + (relation_bonus * 100.0)
             art.score = round(combined, 2)
             art.metadata = dict(art.metadata or {})
             art.metadata["relevance_label"] = j.get("label", "not_relevant")
-            art.metadata["relevance_score"] = jscore
+            art.metadata["relevance_score"] = final_score
+            art.metadata["judge_score_raw"] = raw_score
+            art.metadata["relation_bonus"] = relation_bonus
+            art.metadata["relation_reasons"] = relation_reasons
             art.metadata["relevance_reason"] = j.get("reason", "")
 
         pool.sort(key=lambda a: a.score, reverse=True)

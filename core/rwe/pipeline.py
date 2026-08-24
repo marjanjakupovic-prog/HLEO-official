@@ -47,6 +47,67 @@ _STOPWORDS = {
 # text fields (e.g. openFDA matched on a drug buried in the report's drug list).
 _AUTHORITATIVE_SOURCES = {"openfda_faers"}
 
+_TESTIMONIAL_CUES = {
+    "i started", "since i started", "since starting", "after taking",
+    "after applying", "after using", "when i started", "i got", "i had",
+    "it gave me", "gave me", "made me", "caused me", "i noticed",
+    "ho iniziato", "dopo aver", "da quando", "mi ha dato", "mi ha fatto",
+    "mi è venuto", "mi sono trovato", "mi ha causato", "ho avuto",
+    "mi è comparso", "j'ai", "après avoir", "me dio", "me causó",
+}
+
+_ADVERSE_RELATION_CUES = {
+    "adverse", "side effect", "side effects", "hypertrichosis", "shedding",
+    "hair loss", "alopecia", "rash", "edema", "oedema", "irritation",
+    "pruritus", "headache", "dizziness", "tachycardia", "palpitations",
+    "effluvio", "caduta", "perdita", "peggioramento", "dolore", "nausea",
+}
+
+_EFFICACY_RELATION_CUES = {
+    "worked", "helped", "improved", "improvement", "effective",
+    "effectiveness", "efficacy", "regrowth", "regrew", "better",
+    "response", "treatment", "benefit", "beneficial", "stopped",
+    "stabilized", "stabilised",
+}
+
+_COMPARISON_RELATION_CUES = {
+    "versus", "comparison", "compare", "compared", "network meta-analysis",
+    "head-to-head", "noninferiority", "randomized", "randomised",
+}
+
+
+def _cue_hits(text: str, cues: set[str]) -> List[str]:
+    lower = (text or "").lower()
+    return sorted({cue for cue in cues if cue and cue in lower})[:6]
+
+
+def _relation_bonus(body: str, source_type: str, relation_type: str) -> Tuple[float, List[str]]:
+    """Return a small additive bonus for modality-aware relation cues."""
+    source_type = (source_type or "").lower().strip()
+    relation_type = (relation_type or "").lower().strip()
+    bonus = 0.0
+    reasons: List[str] = []
+
+    testimonial_hits = _cue_hits(body, _TESTIMONIAL_CUES)
+    if source_type == "community_forum" and testimonial_hits:
+        bonus += min(0.15, 0.05 * len(testimonial_hits))
+        reasons.append(f"testimonial={testimonial_hits[:3]}")
+
+    if relation_type in {"side_effect", "adverse_effect", "outcome"}:
+        relation_hits = _cue_hits(body, _ADVERSE_RELATION_CUES)
+    elif relation_type in {"treatment", "efficacy"}:
+        relation_hits = _cue_hits(body, _EFFICACY_RELATION_CUES)
+    elif relation_type == "comparison":
+        relation_hits = _cue_hits(body, _COMPARISON_RELATION_CUES)
+    else:
+        relation_hits = []
+
+    if relation_hits:
+        bonus += min(0.10, 0.03 * len(relation_hits))
+        reasons.append(f"relation={relation_hits[:3]}")
+
+    return round(min(0.20, bonus), 3), reasons
+
 
 def _tokens(text: str) -> set:
     return {w for w in re.findall(r"[a-zà-öø-ÿ]+", (text or "").lower())
@@ -371,26 +432,25 @@ def _score_item_v3(
     query: str,
     sides: Dict[str, set],
     is_authoritative_match: bool,
+    intent=None,
 ) -> Tuple[float, str]:
     """
     QU-aware relevance score (V3). Same contract as ``_score_item`` (V1):
     returns (0–1 score, human match reason) and never mutates the item.
 
-    Differences vs V1:
-    - the query sides come from the structured QU intent (interventions /
-      outcomes / conditions + QU synonyms), UNIONED with the KB entities —
-      the event side exists even when the KB does not recognise the concept
-      (the "shedding" gap);
-    - anchor side = interventions ∪ conditions; event side = outcomes ∪
-      conditions (a condition anchors and also expresses the topic);
-    - SYMMETRIC strictness: for a two-sided query, a record matching only
-      one side scores low (V1 penalised only the missing-event case);
+    Modality-aware rules for RWE:
+    - the query sides come from the structured intent (interventions / outcomes /
+      conditions + QU synonyms), UNIONED with KB entities;
+    - community/forum testimonies are rewarded when they express a direct
+      relation between the exposure and the experience;
     - openFDA keeps the V1 rule: drug trusted server-side, event verified.
     """
     q_tokens = _tokens(query)
     body = f"{it.title} {it.text}".lower()
     treatment_lower = (it.treatment or "").lower()
     condition_lower = (it.condition or "").lower()
+    source_type = (getattr(it, "source_type", "") or "").lower()
+    relation_type = str(getattr(intent, "relation_type", "") or "").lower()
     body_tokens = _tokens(
         f"{it.title} {it.text} {treatment_lower} {condition_lower}"
     )
@@ -401,10 +461,6 @@ def _score_item_v3(
     tiers = sides.get("tiers") or {}
 
     # ── side resolution (avoids the degenerate cd-anchor case) ──────────────
-    # Two-sided queries: the anchor must be the DRUG when one is present
-    # (a condition mention alone cannot satisfy both sides of "finasteride
-    # hair loss"); the event side is outcomes ∪ conditions. Queries without
-    # an intervention are anchored by the condition itself.
     if iv:
         anchor_terms = iv
         event_side = oc | cd
@@ -413,36 +469,38 @@ def _score_item_v3(
         event_side = oc if oc else cd
     anchor_side = anchor_terms
 
-    # ── anchor side (intervention or condition) ──
+    # ── anchor side (intervention or condition) ─────────────────────────────
     if is_authoritative_match and iv:
         anchor_score, anchor_hits = 1.0, ["(authoritative)"]
     else:
         hay = f"{body} {treatment_lower}"
         anchor_hits = sorted({t for t in anchor_terms if t and t in hay})
-        # Vocabulary tiers weight each hit; absent terms weight 1.0 (unchanged
-        # behaviour when no vocabulary evidence is present).
         anchor_w = sum(tiers.get(h, 1.0) for h in anchor_hits)
         anchor_score = min(1.0, 0.6 + 0.2 * anchor_w) if anchor_hits else 0.0
-        # A condition anchor also matches semantically (multilingual groups),
-        # e.g. an Italian post about "caduta capelli" anchors "hair loss".
         if cd and not iv:
             sem_score, sem_hits = _v3_event_score(body, condition_lower, cd,
                                                   False, tiers)
             if sem_score > anchor_score:
                 anchor_score, anchor_hits = sem_score, sem_hits
 
-    # ── event side (QU outcomes/conditions, extended semantic groups) ──
+    # ── event side (QU outcomes/conditions, extended semantic groups) ───────
     event_score, event_hits = _v3_event_score(
         body, condition_lower, event_side, is_authoritative_match, tiers)
 
-    # ── structured-field boost (small, bounded) ──
+    # ── modality-aware RWE bonus: direct testimonies and relation cues ──────
+    relation_bonus = 0.0
+    relation_reasons: List[str] = []
+    if body and (event_score > 0.0 or anchor_score > 0.0 or token_score > 0.0):
+        relation_bonus, relation_reasons = _relation_bonus(body, source_type, relation_type)
+
+    # ── structured-field boost (small, bounded) ─────────────────────────────
     boost = 0.0
     if treatment_lower and any(t in treatment_lower for t in anchor_side):
         boost += 0.05
     if condition_lower and any(t in condition_lower for t in event_side):
         boost += 0.05
 
-    # ── combine ──
+    # ── combine ──────────────────────────────────────────────────────────────
     if anchor_side and event_side:
         if event_score == 0.0:
             base = 0.15 * anchor_score + 0.05 * token_score
@@ -466,6 +524,14 @@ def _score_item_v3(
     else:
         base = 0.8 * token_score
         reason = "v3 token_fallback"
+
+    if relation_bonus > 0:
+        base = min(1.0, base + relation_bonus)
+        if relation_reasons:
+            reason = f"{reason}; modality=rwe; cues={'; '.join(relation_reasons[:2])}"
+        else:
+            reason = f"{reason}; modality=rwe"
+
     return round(min(1.0, base), 3), reason
 
 
@@ -525,7 +591,7 @@ def relevance_filter(
             not auth_sources or it.source in auth_sources
         )
         if v3_sides is not None:
-            score, reason = _score_item_v3(it, query, v3_sides, is_auth)
+            score, reason = _score_item_v3(it, query, v3_sides, is_auth, intent)
         else:
             score, reason = _score_item(it, query, entities, is_auth)
         it.relevance_score = score
