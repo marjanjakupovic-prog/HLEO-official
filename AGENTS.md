@@ -431,3 +431,75 @@ beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
   (ipertricosi, werewolf syndrome, body hair), caduta dei capelli→haarausfall,
   ミノキシジル→minoxidil, nodo inesistente→[] (niente inventato).
 - Full suite: 290 passed.
+
+
+## RWE Relation-Precision Gate (2026-08-24) — agente→manifestazione→relazione
+- **Problema**: entity recognition Catena C risolveva n-grammi ambigui
+  ("sexual" → "child abuse, sexual", "dysfunction" → "meibomian gland
+  dysfunction") → canonical query ed expansion inquinate, FP massivi.
+- **core/rwe/query_engine.py**: `_sanitize_entities()` dopo recognize() —
+  un surface SINGLE-token può fondare solo canonical a 1 token ("shedding"→
+  "alopecia" ok; "sexual"→"child abuse, sexual" scartato); dedup per surface
+  (max confidence). RWEQueryPlan gains `surfaces`.
+- **core/rwe/relation_filter.py (NEW)**: `apply_relation_gate(items, plan)`
+  — Livello A (agente: canonical+varianti identità provider/intent), Livello B
+  (manifestazione: solo frasi cliniche specifiche; token isolati ambigui tipo
+  "sexual"/"dysfunction" MAI sufficienti; fallback co-presenza token in UNA
+  frase), Livello C (relazione: stessa frase / finestra 300 char / titolo /
+  record strutturato openFDA; guard di NEGAZIONE — "never gave me any sexual
+  side effects" = relazione negata → drop, caso reale darolutamide).
+  Penalità other-agent-in-title (related_concept drug-typed). Profilo RWE
+  strutturato deterministico in metadata["rwe_profile"] (dose/durata/onset/
+  sospensione/outcome/rechallenge — vuoto se assente, mai inventato).
+  Gate attivo SOLO con relazione strutturata (agente+manifestazione), altri-
+  menti passthrough. Stats in totals["precision_filter"].
+- **core/rwe/pipeline.py**: gate integrato in search() dopo relevance_filter;
+  `_v3_event_score` gains weak token co-presence fallback (frase multi-token
+  con tutti i token non-generici nel testo = weak hit; il LINK lo verifica il
+  gate). Soglia 0.20 e cap 400 invariati.
+- **core/rwe/intent.py**: prompt intent LLM chiede fino a 8 sinonimi incluse
+  fraseologie da paziente; _MAX_SYNONYMS 6→8. Copertura manifestazioni dai
+  sinonimi QU LLM (1 call/query, flag HLEO_RWE_INTENT_SCORING).
+- **Live test** "finasteride sexual dysfunction adverse effects" (Groq):
+  1270→635 unique→61 relevant→A:45→B:2→C:1 (1 negata scartata)→final 1,
+  100% precision. PRIMA: 44 finali con FP (bicalutamide log 0.95, Zix, Big3…).
+- **Debolezza residua (fase recall)**: Livello B dipende dalla copertura
+  sinonimi intent LLM (variabile tra run); fraseologie non coperte ("morning
+  wood", "weaker erections") vengono perse. NON abbassare soglie; ampliare
+  copertura lessicale in fase dedicata.
+- **Tests**: tests/test_rwe_precision.py (18 test). Suite: 308 passed.
+
+
+## RWE Translation & Retrieval Robustness (2026-08-24, isotretinoina case)
+- **Root cause del fallimento IT**: orchestrator JSON-mode translation fails
+  5/5 on Groq (json_validate_failed) → query stayed Italian → openFDA 400 on
+  apostrophe → 0 results. Fix RWE-only (scientific pipeline untouched):
+- **core/rwe/translation.py (NEW)**: robust chain plain-text LLM (NO JSON,
+  max_tokens=512 — reasoning models eat small budgets and return EMPTY) →
+  minimal retry → deterministic fallback from provider entities (Catena C).
+  INN normalisation requested in prompt (isotretinoina → isotretinoin).
+- **core/rwe/query_engine.py**: robust-translation wiring when orchestrator
+  did not translate and lang != en (plan.translation_method: orchestrator|
+  llm|llm_retry|deterministic|none); intent built BEFORE expansion;
+  intent-driven EXP_AGENT (plain agent term, tier 1.5 — openFDA matches FAERS
+  by drug name only; quoted agent+event phrases 404 there) + ≤6 intervention
+  ×outcome combos.
+- **core/rwe/openfda_collector.py**: sanitize_fda_term() (apostrophes
+  '/’, NFKD unicode, brackets, 8-token cap); HTTP 400 → ONE retry with
+  4-token variant, then STATUS_UNSUPPORTED_QUERY (distinct from
+  network_error); pipeline status_rank updated.
+- **core/rwe/relation_filter.py**: generic-hypernym guard (DEMONSTRATED
+  precision bug): event entity with canonical==surface as a single generic
+  token that is a proper subset of a multi-token intent outcome ("pain" ⊂
+  "joint pain") is excluded from the manifestation side — its provider
+  variants ("abdominal pain", "back pain") were broadening Level B. Real
+  provider mappings (canonical != surface, "shedding"→"alopecia") kept.
+- **Live result** (query "dolore articolare e rigidità dopo l'uso di
+  isotretinoina, esperienze dei pazienti", Groq): translation llm
+  "joint pain and stiffness after isotretinoin use patient experiences";
+  openFDA ok; 2270→1635→102→A:96→B:25→C:25→final 25, ALL arthralgia
+  (= joint pain), precision 25/25. Baseline prima: relevance 5, final 0.
+- **Tests**: tests/test_rwe_translation.py (15) + 3 hypernym tests in
+  test_rwe_precision.py. Suite: 326 passed. 2 legacy test stubs updated
+  ("stopped my shedding" → "stopped my hair shedding") because the
+  now-active gate requires a provider-recognised manifestation phrase.

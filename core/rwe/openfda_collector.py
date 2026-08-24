@@ -12,6 +12,8 @@ evidence of causality. They are classified as evidence_tier="spontaneous_report"
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import List, Optional, Tuple
 
 import requests
@@ -26,6 +28,34 @@ STATUS_OK = "ok"
 STATUS_NO_RESULTS = "no_results"
 STATUS_RATE_LIMITED = "rate_limited"
 STATUS_NETWORK_ERROR = "network_error"
+STATUS_UNSUPPORTED_QUERY = "unsupported_query"
+
+# openFDA's Lucene parser rejects long quoted phrases containing stray
+# apostrophes/quotes and some non-ASCII punctuation. Sanitise before sending.
+_MAX_PHRASE_TOKENS = 8
+
+
+def sanitize_fda_term(term: str) -> str:
+    """Make a query term safe for openFDA's quoted-phrase syntax.
+
+    - NFKD-normalises unicode and strips combining marks (à→a, ﬁ→fi);
+    - turns typographic quotes/apostrophes (’ ‘ “ ”) into plain ASCII, then
+      removes every quote/apostrophe (a stray ' breaks the quoted phrase);
+    - drops brackets and other punctuation the parser chokes on;
+    - collapses whitespace and caps the phrase length (Lucene "Search not
+      supported" on very long phrases).
+    """
+    t = unicodedata.normalize("NFKD", term or "")
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    t = (t.replace("’", "'").replace("‘", "'")
+          .replace("“", '"').replace("”", '"'))
+    t = t.replace("'", " ").replace('"', " ")
+    t = re.sub(r"[\[\](){},;:\\/|@#$%^&*+=<>?~`!]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    tokens = t.split()
+    if len(tokens) > _MAX_PHRASE_TOKENS:
+        t = " ".join(tokens[:_MAX_PHRASE_TOKENS])
+    return t
 
 
 class OpenFDACollector:
@@ -53,7 +83,10 @@ class OpenFDACollector:
         # openFDA's search parser expects literal spaces around the OR operator;
         # passing '+OR+' makes requests URL-encode the '+' as '%2B', which openFDA
         # treats as a 404. openFDA is case-insensitive on generic_name/reaction.
-        term = query.strip()
+        term = sanitize_fda_term(query)
+        if not term:
+            return [], STATUS_UNSUPPORTED_QUERY, (
+                f"Query not sanitisable for openFDA: '{query[:60]}'.")
         search_expr = (
             f'patient.drug.openfda.generic_name:"{term}" '
             f'OR patient.reaction.reactionmeddrapt:"{term}"'
@@ -64,6 +97,7 @@ class OpenFDACollector:
         page_size = max(1, min(target, 100))
         results = []
         skip = 0
+        retried_shorter = False
         while len(results) < target:
             params = {"search": search_expr, "limit": page_size, "skip": skip}
             if self.api_key:
@@ -79,6 +113,24 @@ class OpenFDACollector:
                 if not results:
                     return [], STATUS_NO_RESULTS, f"No FAERS reports matched '{query}'."
                 break
+            if resp.status_code == 400 and not retried_shorter:
+                # Query not supported as-is: log it and retry ONCE with a
+                # shorter compatible variant (first tokens only) — never let
+                # one bad query fail the whole pipeline.
+                retried_shorter = True
+                short = " ".join(term.split()[:4])
+                logger.warning(
+                    "openFDA HTTP 400 (unsupported query) for '%s' — "
+                    "retrying with '%s'", term[:80], short[:80])
+                term = short
+                search_expr = (
+                    f'patient.drug.openfda.generic_name:"{term}" '
+                    f'OR patient.reaction.reactionmeddrapt:"{term}"'
+                )
+                continue
+            if resp.status_code == 400:
+                return [], STATUS_UNSUPPORTED_QUERY, (
+                    f"openFDA HTTP 400 (unsupported query) for '{term[:80]}'.")
             if resp.status_code != 200:
                 return [], STATUS_NETWORK_ERROR, f"openFDA HTTP {resp.status_code}."
             try:

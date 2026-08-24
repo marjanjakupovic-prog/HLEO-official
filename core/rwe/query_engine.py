@@ -54,6 +54,7 @@ MIN_EXPANDED_QUERIES = 1           # always at least the prepared query
 EXP_ORIGINAL   = "original"
 EXP_TRANSLATED = "translated"
 EXP_CANONICAL  = "canonical"
+EXP_AGENT      = "agent"
 EXP_SYNONYM    = "synonym"
 EXP_MESH       = "mesh"
 EXP_NEIGHBOR   = "neighbor"      # legacy tag, no longer generated
@@ -96,6 +97,8 @@ class RWEQueryPlan:
     canonical_query: str = ""
     entities: list = field(default_factory=list)        # (type, canonical, conf)
     vocabulary: dict = field(default_factory=dict)
+    surfaces: dict = field(default_factory=dict)        # canonical → surface in the query
+    translation_method: str = ""                        # orchestrator|llm|llm_retry|deterministic|none
     expanded_queries: List[ExpandedQuery] = field(default_factory=list)
     # QU-aware relevance (V3): structured intent; None = pure V1 behaviour.
     intent: Optional[object] = None                   # RWEQueryIntent | None
@@ -116,6 +119,7 @@ class RWEQueryPlan:
             "detected_language": self.detected_language,
             "translated_query": self.translated_query,
             "translation_applied": self.translation_applied,
+            "translation_method": self.translation_method,
             "entities": [
                 {"type": t, "canonical": c, "confidence": conf}
                 for t, c, conf in self.entities
@@ -248,6 +252,24 @@ class RWEQueryEngine:
             orch.translation_applied
             or translated.lower() != q.lower()
         )
+        translation_method = "orchestrator" if translation_applied else ""
+
+        # ── 1b. Robust RWE translation fallback (plain-text, JSON-free) ──────
+        # The orchestrator's single JSON-mode call can fail on some LLM
+        # providers (observed: Groq gpt-oss-120b json_validate_failed x5),
+        # leaving a non-English query untranslated. RWE then runs its own
+        # robust chain: plain-text LLM → minimal retry → deterministic
+        # provider-entity fallback. The orchestrator itself is untouched.
+        if not translation_applied and lang not in {"en", "und"}:
+            from core.rwe.translation import translate_for_rwe
+            tres = translate_for_rwe(q, lang)
+            if tres.method != "none" and tres.english_query.strip() \
+                    and tres.english_query.strip().lower() != q.lower():
+                translated = tres.english_query.strip()
+                translation_applied = True
+                translation_method = tres.method
+                logger.info("RWEQueryEngine: robust translation (%s): '%s' → '%s'",
+                            tres.method, q[:50], translated[:60])
 
         # ── 2. Entity recognition via external providers (Catena C) ─────────
         # The English rendering is resolved as English; the original text is
@@ -267,27 +289,20 @@ class RWEQueryEngine:
             entities = rec.entities
             resolutions = rec.resolutions
             surfaces = rec.surfaces
+            entities, resolutions, surfaces = self._sanitize_entities(
+                entities, resolutions, surfaces)
 
         # ── 3. Canonicalisation (provider preferred terms; translation intact)
         canonical = self._canonicalize(translated, entities, surfaces)
 
-        # ── 4. Controlled query expansion (provider terminology only) ────────
-        vocabulary = self._slim_vocabulary(resolutions)
-        expanded = self._expand(
-            original=q,
-            translated=translated,
-            canonical_query=canonical,
-            lang=lang,
-            entities=entities,
-            resolutions=resolutions,
-        )
-
-        # ── 5. QU intent for the V3 relevance scorer ─────────────────────────
+        # ── 4. QU intent (built BEFORE expansion so intent-driven combos can
+        # join the expanded set) ─────────────────────────────────────────────
         # The LLM-structured intent is feature-flagged; additionally, when the
         # query exposes a structured drug→event relation, a deterministic
         # entities-fallback intent is ALWAYS built (no LLM call) so the V3
         # relation-aware scorer activates even with the flag off. Queries
         # without a recognised relation keep intent=None → exact V1 behaviour.
+        vocabulary = self._slim_vocabulary(resolutions)
         intent = None
         if intent_scoring_enabled():
             intent = build_intent(translated, q, entities, use_llm=True)
@@ -298,6 +313,17 @@ class RWEQueryEngine:
             if vocabulary:
                 intent.vocabulary = vocabulary
 
+        # ── 5. Controlled query expansion (provider terminology + intent) ────
+        expanded = self._expand(
+            original=q,
+            translated=translated,
+            canonical_query=canonical,
+            lang=lang,
+            entities=entities,
+            resolutions=resolutions,
+            intent=intent,
+        )
+
         return RWEQueryPlan(
             original_query=q,
             detected_language=lang,
@@ -306,9 +332,62 @@ class RWEQueryEngine:
             canonical_query=canonical,
             entities=entities,
             vocabulary=vocabulary,
+            surfaces=surfaces,
+            translation_method=translation_method,
             expanded_queries=expanded,
             intent=intent,
         )
+
+    # ── Entity sanitisation (RWE precision guard) ────────────────────────────
+
+    @staticmethod
+    def _sanitize_entities(
+        entities: list,
+        resolutions: dict,
+        surfaces: dict,
+    ):
+        """Drop provider homonymy artefacts from the recognised entities.
+
+        A SINGLE-token surface (e.g. "sexual", "dysfunction", "adverse") is
+        lexically ambiguous: when a provider resolves it to a multi-word
+        clinical concept ("child abuse, sexual", "meibomian gland
+        dysfunction") that concept is NOT what the user wrote — it is an
+        n-gram lookup artefact and would pollute canonicalisation, expansion
+        and the relevance side-sets. Such entities are dropped.
+
+        Multi-token surfaces (e.g. "sexual dysfunction") are specific phrases
+        the user actually wrote, so their provider mapping stays trusted
+        (including lexical-gap mappings such as "hair loss" → "alopecia").
+        Single-token surfaces keep only 1-token canonicals ("shedding" →
+        "alopecia", "propecia" → "finasteride").
+        """
+        keep_canonicals = set()
+        kept = []
+        for etype, canonical, conf in entities or []:
+            surface = (surfaces or {}).get(canonical, canonical)
+            surf_tokens = [t for t in re.findall(r"[a-zà-öø-ÿ0-9]+", surface.lower())]
+            if len(surf_tokens) <= 1:
+                canon_tokens = re.findall(r"[a-zà-öø-ÿ0-9]+", canonical.lower())
+                if len(canon_tokens) > 1:
+                    continue
+            keep_canonicals.add(canonical)
+            kept.append((etype, canonical, conf))
+        # Same query surface resolved to several provider concepts (e.g. MeSH
+        # "Sexual Dysfunction, Physiological" + "Sexual Dysfunctions,
+        # Psychological" for "sexual dysfunction"): keep the most confident
+        # one, so canonicalisation/expansion apply one concept per phrase.
+        by_surface: dict = {}
+        for etype, canonical, conf in kept:
+            surface = ((surfaces or {}).get(canonical, canonical)).lower()
+            if surface not in by_surface or conf > by_surface[surface][2]:
+                by_surface[surface] = (etype, canonical, conf)
+        kept = list(by_surface.values())
+        keep_canonicals = {c for _t, c, _cf in kept}
+        resolutions = {c: r for c, r in (resolutions or {}).items()
+                       if c in keep_canonicals}
+        surfaces = {c: s for c, s in (surfaces or {}).items()
+                    if c in keep_canonicals}
+        return kept, resolutions, surfaces
 
     @staticmethod
     def _canonicalize(translated: str, entities: list, surfaces: dict) -> str:
@@ -360,6 +439,7 @@ class RWEQueryEngine:
         lang: str,
         entities: list,
         resolutions: Optional[dict] = None,
+        intent=None,
     ) -> List[ExpandedQuery]:
         """
         Build the controlled set of expanded queries.
@@ -405,6 +485,54 @@ class RWEQueryEngine:
 
         if not entities:
             return self._dedup_and_cap(queries, canonical_names)
+
+        # ── A2: intent-driven agent×event combos (RWE-oriented, SHORT) ──────
+        # Server-side providers (openFDA, Reddit) only receive the first
+        # queries of the plan; long full-sentence phrases yield 404/no-results
+        # there. Short intervention×outcome combos keep agent + event +
+        # relation and actually match provider records. Max 6, never generic:
+        # outcomes that are generic any-event terms are skipped.
+        if intent is not None:
+            from core.rwe.intent import GENERIC_EVENT_TERMS as _GET
+            ivs = [str(t).strip() for t in
+                   (getattr(intent, "interventions", None) or []) if str(t).strip()]
+            ocs = [str(t).strip() for t in
+                   (getattr(intent, "outcomes", None) or []) if str(t).strip()]
+            synonyms = getattr(intent, "synonyms", None) or {}
+            # Plain agent term first: pharmacovigilance APIs (openFDA) match
+            # records by drug name; the agent×event relation is then verified
+            # downstream by the relevance filter and the A/B/C gate.
+            for iv in ivs[:1]:
+                queries.append(ExpandedQuery(
+                    query=iv,
+                    expansion_type=EXP_AGENT,
+                    source_language="en",
+                    matched_entities=[iv],
+                    original_term=iv,
+                    expanded_term=iv,
+                    query_origin="intent",
+                ))
+            combo_budget = 6
+            for iv in ivs:
+                for oc in ocs:
+                    if oc.lower() in _GET:
+                        continue
+                    oc_variants = [oc] + [str(a).strip() for a in
+                                          (synonyms.get(oc) or [])[:2]
+                                          if str(a).strip()]
+                    for variant in oc_variants:
+                        if combo_budget <= 0:
+                            break
+                        combo_budget -= 1
+                        queries.append(ExpandedQuery(
+                            query=f"{iv} {variant}",
+                            expansion_type=EXP_COMBO,
+                            source_language="en",
+                            matched_entities=[iv, oc],
+                            original_term=iv,
+                            expanded_term=variant,
+                            query_origin="intent",
+                        ))
 
         # ── B: provider-typed variants, one entity at a time ────────────────
         # Synonyms, translations, orthographic variants, colloquial/slang and
@@ -490,6 +618,7 @@ class RWEQueryEngine:
 
         tier_order = {
             EXP_ORIGINAL: 0, EXP_TRANSLATED: 1, EXP_CANONICAL: 1,
+            EXP_AGENT: 1.5,
             EXP_SYNONYM: 2, EXP_MESH: 2, EXP_COMBO: 2,
             "preferred": 2, "translation": 2, "abbreviation": 2,
             "orthographic_variant": 2, "normalized": 2,

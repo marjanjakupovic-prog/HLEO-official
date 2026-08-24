@@ -24,6 +24,7 @@ from core.orchestrator import QueryOrchestrator  # noqa: F401  (patched by tests
 from core.rwe.intent import GENERIC_EVENT_TERMS, merged_sides
 from core.rwe.models import RWEItem, RWESearchResult
 from core.rwe.query_engine import RWEQueryEngine
+from core.rwe.relation_filter import apply_relation_gate
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +384,22 @@ def _v3_event_score(body: str, condition_field: str, event_side: set,
     hits = sorted({t for t in terms if t and t in body})[:6]
     if not hits and condition_field:
         hits = sorted({t for t in terms if t and t in condition_field})[:6]
+    if not hits:
+        # Word-order/inflection-tolerant fallback: a multi-token event phrase
+        # counts as a WEAK hit when ALL its non-generic tokens appear in the
+        # body ("sexual dysfunction" expressed as "sexual ... dysfunction").
+        # Single tokens and generic any-event phrases never qualify. The
+        # agent↔event LINK is verified downstream by the relation gate.
+        body_tokens = _tokens(body)
+        generic_tokens = {
+            tok for term in _GENERIC_EVENT_TERMS for tok in _tokens(term)}
+        for t in sorted(terms):
+            base_tokens = [tok for tok in _tokens(t.split(",")[0])
+                           if tok not in generic_tokens]
+            if len(base_tokens) >= 2 and all(tok in body_tokens
+                                             for tok in base_tokens):
+                hits = [f"{' '.join(base_tokens)} (tokens)"]
+                break
     if not hits:
         return 0.0, []
     return _score(hits), hits
@@ -780,6 +797,12 @@ class RWEPipeline:
             vocabulary=getattr(plan, "vocabulary", None),
             min_score=0.20,
         )
+        relevant_after_scoring = len(all_items)
+        # ── 3b. Relation-precision gate (Levels A/B/C, RWE-only) ────────────
+        # Active only for structured agent→manifestation queries; otherwise it
+        # is a no-op passthrough. Drops off-agent / off-manifestation /
+        # relation-unverified items and re-ranks the survivors.
+        all_items, gate_stats = apply_relation_gate(all_items, plan)
         all_items.sort(key=lambda it: it.relevance_score, reverse=True)
         relevant_before_cap = len(all_items)
         all_items = all_items[:400]
@@ -788,12 +811,14 @@ class RWEPipeline:
             "retrieved": before,
             "deduped_removed": before - after,
             "unique": after,
-            "relevant": relevant_before_cap,
+            "relevant": relevant_after_scoring,
             "final": len(all_items),
             "score_threshold": 0.20,
             "max_results": 400,
             "queries_used": len(plan.expanded_queries),
         }
+        if gate_stats is not None:
+            totals["precision_filter"] = gate_stats
 
         return RWESearchResult(
             query=query,
@@ -879,7 +904,8 @@ class RWEPipeline:
         # Aggregate: prefer ok > no_results > no_credentials > error
         status_rank = {
             "ok": 0, "no_results": 1, "no_credentials": 2,
-            "auth_error": 3, "rate_limited": 4, "network_error": 5,
+            "auth_error": 3, "unsupported_query": 4, "rate_limited": 5,
+            "network_error": 6,
         }
         agg = "no_results"
         if statuses:

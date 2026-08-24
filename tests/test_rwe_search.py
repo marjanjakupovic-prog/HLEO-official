@@ -476,7 +476,9 @@ def test_source_language_stamped(monkeypatch):
     # is English-oriented, so translated queries match).
     def reddit_en_only(query, limit=15):
         if any(w in query.lower() for w in ("finasteride", "hair", "shedding")) and "caduta" not in query.lower():
-            return [_fake_reddit_item("en post", "u-en")], "ok", "ok"
+            return [_fake_reddit_item(
+                "en post", "u-en",
+                text="finasteride stopped my hair shedding")], "ok", "ok"
         return [], "no_results", "none"
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok(faers)), \
          patch.object(pipe.reddit, "search_with_status", reddit_en_only), \
@@ -512,7 +514,9 @@ def test_results_from_translated_query(monkeypatch):
     # Reddit returns items only when the query contains 'finasteride' (English)
     def reddit_conditional(query, limit=15):
         if "finasteride" in query.lower():
-            return [_fake_reddit_item("en post", "u-en")], "ok", "ok"
+            return [_fake_reddit_item(
+                "en post", "u-en",
+                text="finasteride stopped my hair shedding")], "ok", "ok"
         return [], "no_results", "none"
     with patch.object(pipe.reddit, "search_with_status", reddit_conditional), \
          patch.object(pipe.openfda, "search_with_status", _stub_openfda_status("no_results", "x")), \

@@ -86,7 +86,7 @@ GENERIC_EVENT_TERMS = {
     "effetto collaterale", "reaction", "reactions",
 }
 _MAX_TERMS_PER_SIDE = 12
-_MAX_SYNONYMS = 6
+_MAX_SYNONYMS = 8
 _MAX_TERM_LEN = 40
 
 
@@ -172,9 +172,11 @@ return ONLY a JSON object with these keys:
   the query does not ask about any event.
 - "conditions": list of diseases / conditions mentioned (e.g. "hair loss",
   "androgenetic alopecia"). Empty list if none.
-- "synonyms": object mapping each canonical term above to a list of up to 4
-  common aliases / brand names / patient phrasings (e.g. "finasteride":
-  ["propecia", "proscar"]).
+- "synonyms": object mapping each canonical term above to a list of up to 8
+  common aliases / brand names / patient phrasings, INCLUDING colloquial
+  forms patients actually use in forums (e.g. "finasteride":
+  ["propecia", "proscar"]; "sexual dysfunction": ["erectile dysfunction",
+  "impotence", "low libido", "loss of libido", "ejaculation problems"]).
 - "relation_type": one of "side_effect", "treatment", "outcome",
   "comparison", "unknown".
 
