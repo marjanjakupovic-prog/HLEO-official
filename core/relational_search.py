@@ -293,14 +293,24 @@ class RelationalSearch:
             pool = remaining[:300]
             judgements = self._judge_batched(pool, rel, stats)
             for item, judgement in zip(pool, judgements):
-                final_score = max(0.0, min(1.0, float(judgement.get("score", 0.0))))
-                item.score = round(final_score * 1000.0 + clinical_rank(item), 2)
+                raw_score = max(0.0, min(1.0, float(judgement.get("score", 0.0))))
+                relation_bonus, relation_reasons = self._relation_bonus(item, rel)
+                final_score = min(1.0, max(0.0, raw_score + relation_bonus))
+                # final_score * 1000 dominates (judge ordering wins);
+                # relation_bonus * 50 breaks ties in favour of relation-specific
+                # articles; clinical_rank * 0.5 is the last tie-break.
+                item.score = round(
+                    final_score * 1000.0 + (relation_bonus * 50.0)
+                    + (clinical_rank(item) * 0.5), 2)
                 item.metadata = dict(item.metadata or {})
                 item.metadata.update({
                     "relevance_label": judgement.get("label", "not_relevant"),
                     "relevance_score": final_score,
                     "relevance_reason": judgement.get("reason", ""),
                     "final_score": final_score,
+                    "judge_score_raw": raw_score,
+                    "relation_bonus": relation_bonus,
+                    "relation_reasons": relation_reasons,
                 })
             judged_count += len(pool)
             remaining = candidates[judged_count:]
@@ -513,6 +523,24 @@ class RelationalSearch:
             if agent_hits and manifest_hits:
                 bonus += 0.03
                 reasons.append("agent+relation")
+
+        # Relation-specificity: for an adverse-effect query, a paper whose text
+        # contains the exact normalized manifestation (e.g. "hypertrichosis",
+        # not a generic "shed") or one of the extracted relation phrases is
+        # more on-relation than a paper that merely matches the cue vocabulary.
+        if relation_type == "adverse_effect":
+            manifest_normalized = str(
+                (rel.manifestation or {}).get("normalized") or "").lower().strip()
+            if manifest_normalized and manifest_normalized in text:
+                bonus += 0.03
+                reasons.append(f"specific_manifestation={manifest_normalized}")
+            specificity_phrases = [
+                p for p in (rel.relation_phrases or [])
+                if str(p).lower().strip() and str(p).lower().strip() in text
+            ]
+            if specificity_phrases:
+                bonus += 0.02
+                reasons.append(f"specific_phrase={str(specificity_phrases[0]).lower()}")
 
         return round(min(0.20, bonus), 3), reasons
 

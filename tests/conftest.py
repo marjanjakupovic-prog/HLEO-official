@@ -13,6 +13,11 @@ import sys
 # runs the ASGI app in a separate thread from the test).
 os.environ["DATABASE_URL"] = "sqlite://"
 
+# Tests are hermetic/offline: the Catena C vocabulary layer defaults to ON in
+# production, but in tests real providers must never be hit. Tests that need
+# terminology patch build_resolver_from_env with a FakeResolver explicitly.
+os.environ["HLEO_VOCAB_ENABLED"] = "0"
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Neutralize load_dotenv before any core module re-imports it during a request.

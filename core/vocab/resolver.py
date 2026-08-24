@@ -30,7 +30,11 @@ DEFAULT_PROVIDERS = "rxnorm,mesh,conceptnet,wikidata"
 
 
 def vocab_enabled() -> bool:
-    return os.getenv(VOCAB_ENABLED_ENV, "").strip().lower() in {
+    """Catena C is provider-first and ON by default (the terminology layer of
+    both Scientific and RWE). Set HLEO_VOCAB_ENABLED=0 to opt out (e.g. fully
+    offline test environments) — the pipelines then degrade gracefully with
+    no external terminology."""
+    return os.getenv(VOCAB_ENABLED_ENV, "1").strip().lower() in {
         "1", "true", "yes", "on"}
 
 

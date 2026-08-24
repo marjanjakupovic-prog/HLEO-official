@@ -59,10 +59,6 @@ from core.rwe.pipeline import (  # noqa: E402  (read-only reuse, unchanged)
     _AUTHORITATIVE_SOURCES, _event_match, _tokens, deduplicate,
     relevance_filter,
 )
-from core.biomedical_kb import (  # noqa: E402
-    CONDITION_ALIASES, DRUG_ALIASES, SYMPTOM_ALIASES,
-)
-
 SNAPSHOT = Path(__file__).resolve().parent / "corpus_snapshot.json"
 QU_CACHE = Path(__file__).resolve().parent / "qu_cache.json"
 OUT_JSON = Path(__file__).resolve().parent / "relevance_scorer_v2_report.json"
@@ -76,10 +72,10 @@ def _norm(s: str) -> str:
     return s.lower().strip()
 
 
-def build_v2_terms(qu: dict, entities: list) -> dict:
+def build_v2_terms(qu: dict, entities: list, vocabulary: dict = None) -> dict:
     """Term sets for V2: QU interventions/outcomes/conditions + QU synonyms,
-    merged with KB entities/aliases as fallback. Mirrors the judge's
-    vocabulary construction but is used for SCORING, not judging."""
+    merged with the plan's provider-recognised entities and the Catena C
+    provider vocabulary (slim resolutions). No local alias dictionaries."""
     iv = {_norm(t) for t in qu.get("interventions", []) if t}
     oc = {_norm(t) for t in qu.get("outcomes", []) if t}
     cd = {_norm(t) for t in qu.get("conditions", []) if t}
@@ -89,22 +85,23 @@ def build_v2_terms(qu: dict, entities: list) -> dict:
         if bucket is not None:
             bucket.update(_norm(a) for a in aliases
                           if isinstance(a, str) and len(a) > 3)
-    # KB entities as fallback (production plan.entities) + their KB aliases
-    alias_map = {"drug": (DRUG_ALIASES, iv), "active_ingredient": (DRUG_ALIASES, iv),
-                 "symptom": (SYMPTOM_ALIASES, oc), "adverse_effect": (SYMPTOM_ALIASES, oc),
-                 "condition": (CONDITION_ALIASES, cd), "disease": (CONDITION_ALIASES, cd)}
+    # Provider-recognised entities (production plan.entities)
+    etype_buckets = {"drug": iv, "active_ingredient": iv,
+                     "symptom": oc, "adverse_effect": oc,
+                     "condition": cd, "disease": cd}
     for etype, canonical, _conf in entities or []:
-        aliases_dict, bucket = alias_map.get(etype, ({}, oc))
+        bucket = etype_buckets.get(etype, oc)
         bucket.add(_norm(canonical))
-        bucket.update(_norm(a) for a in aliases_dict.get(canonical, []) if len(a) > 3)
-    # KB aliases for QU canonicals too (e.g. QU gives "shedding"; KB adds
-    # aliases only when the canonical is known to the KB)
-    for canon, bucket, ad in [(t, iv, DRUG_ALIASES) for t in list(iv)] + \
-                             [(t, oc, SYMPTOM_ALIASES) for t in list(oc)] + \
-                             [(t, cd, CONDITION_ALIASES) for t in list(cd)]:
-        for kb_canon, aliases in ad.items():
-            if canon == kb_canon.lower():
-                bucket.update(_norm(a) for a in aliases if len(a) > 3)
+    # Catena C provider variants (slim vocabulary attached to the plan)
+    if vocabulary:
+        from core.vocab.models import VocabularyResolution
+        for canonical, entries in vocabulary.items():
+            c = _norm(canonical)
+            bucket = iv if c in iv else oc if c in oc else cd if c in cd else None
+            if bucket is None:
+                continue
+            bucket.update(_norm(t) for t in
+                          VocabularyResolution.from_slim(canonical, entries).scored_terms())
     return {"iv": iv, "oc": oc, "cd": cd}
 
 
@@ -248,7 +245,8 @@ def main():
         qu = qu_cache[q]
         plan, _plan_b = build_plans(q, qu)  # production plan (CURRENT arm)
         judge_terms = build_judge_terms(qu, plan.entities)
-        v2_terms = build_v2_terms(qu, plan.entities)
+        v2_terms = build_v2_terms(qu, plan.entities,
+                                  getattr(plan, "vocabulary", None))
 
         # ── SAME corpus as the exhaustive run: cache-only, no live fetch ──
         per_source, _trace, _fs = collect(collectors, snapshot, plan, 100,

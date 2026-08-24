@@ -21,12 +21,22 @@ Relation → match_kind mapping (typed, conservative):
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
+
+import requests
 
 from core.vocab.base import VocabularyProvider
 from core.vocab.models import VocabularyMatch
 
+logger = logging.getLogger(__name__)
+
 API = "https://api.conceptnet.io"
+
+# The web frontend (conceptnet.io) is the fallback ONLY for API outages:
+# 502/503/504, timeout or connection error. 4xx responses and empty results
+# are NOT outages and never trigger the fallback.
+_FALLBACK_STATUSES = {502, 503, 504}
 
 _REL_KIND = {
     "Synonym": "synonym",
@@ -51,9 +61,21 @@ class ConceptNetProvider(VocabularyProvider):
                 semantic_types: Optional[list],
                 limit: int) -> List[VocabularyMatch]:
         node = self._node(term, language)
-        data = self._get_json(f"{API}/query",
-                              params={"node": node, "rel": _QUERY_RELS,
-                                      "limit": 50})
+        try:
+            data = self._get_json(f"{API}/query",
+                                  params={"node": node, "rel": _QUERY_RELS,
+                                          "limit": 50})
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status not in _FALLBACK_STATUSES:
+                raise  # 4xx / other: not an outage, no web fallback
+            logger.info("conceptnet API %s for %r — trying web fallback",
+                        status, term)
+            return self._web_fallback(term, language, limit)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.info("conceptnet API unreachable for %r (%s) — web fallback",
+                        term, type(exc).__name__)
+            return self._web_fallback(term, language, limit)
         edges = (data or {}).get("edges", []) or []
 
         preferred = term.strip().lower()
@@ -118,3 +140,15 @@ class ConceptNetProvider(VocabularyProvider):
             return []
         return [t for m in self.search(term.replace("_", " "), language=lang)
                 for t in m.synonyms]
+
+    @staticmethod
+    def _web_fallback(term: str, language: str,
+                      limit: int) -> List[VocabularyMatch]:
+        """Delegate to the conceptnet.io frontend during an API outage.
+
+        Returns [] when the node does not exist (never invents results) and
+        [] when the web frontend is also unreachable (provider unavailable —
+        the base class contract is "never raise")."""
+        from core.vocab import conceptnet_web
+        matches = conceptnet_web.search_web(term, language, limit=limit)
+        return matches if matches is not None else []

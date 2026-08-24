@@ -2,15 +2,23 @@
 RWE Query Engine — autonomous query preparation, translation, and controlled
 query expansion for the Real World Evidence search pipeline.
 
+Catena C — provider-first terminology
+-------------------------------------
+All terminology (entity recognition, canonicalisation, synonyms, MeSH,
+colloquial/multilingual variants) is resolved through the EXTERNAL vocabulary
+providers via ``core.vocab.resolver`` + ``core.vocab.entities`` (RxNorm, MeSH,
+ConceptNet, Wikidata). NO internal hardcoded dictionaries are used.
+
 Flow
 ----
     User Query (any language)
-      → language detection (quick heuristic + QueryOrchestrator)
-      → query preparation (normalise + quick Italian→English token map)
+      → language detection (QueryOrchestrator LLM, any language; local
+        heuristic only as a hint when the LLM is unavailable)
       → translation (QueryOrchestrator → scientific English; original kept)
-      → intent / entity recognition (biomedical_kb.lookup_entity)
-      → controlled query expansion (KB synonyms + MeSH + graph neighbours
-        + entity combos + trichology supplement)
+      → entity recognition (external providers, EN + source language)
+      → canonicalisation (provider preferred terms)
+      → controlled query expansion (provider synonyms / translations /
+        colloquial-slang / MeSH concepts + entity combos)
       → RWEQueryPlan
 
 Design rules
@@ -19,12 +27,9 @@ Design rules
 - Expansion is CONTROLLED: it stays anchored to the recognised entities
   (a finasteride query remains about finasteride + its effects; it never
   broadens into generic hair-loss chatter).
-- Reuses the existing ``biomedical_kb`` dictionaries and ``QueryOrchestrator``
-  — no duplicated synonym/translation logic.
-- KB-first, deterministic. LLM expansion is optional (only when an OpenAI key
-  is present) and bounded, so tests run without network/API.
-- Trichology-focused: a supplement of colloquial shedding/regrowth phrasings
-  is used as an EXPANSION BASE, never as a rigid filter.
+- Providers never raise and are cache-backed; when no resolver is available
+  (offline / HLEO_VOCAB_ENABLED=0) the plan degrades gracefully to the
+  original/translated queries only.
 """
 from __future__ import annotations
 
@@ -34,26 +39,16 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from core.biomedical_kb import (
-    DRUG_ALIASES,
-    CONDITION_ALIASES,
-    SYMPTOM_ALIASES,
-    get_mesh_terms,
-    get_neighbors,
-    lookup_entity,
-    quick_translate_it,
-)
 from core.orchestrator import QueryOrchestrator
 from core.rwe.intent import build_intent, intent_scoring_enabled
+from core.vocab.entities import merge_recognitions, recognize
+from core.vocab.resolver import build_resolver_from_env
 
 logger = logging.getLogger(__name__)
 
 # ── Tunables ─────────────────────────────────────────────────────────────────
 MAX_EXPANDED_QUERIES = 16          # hard cap per search plan
 MIN_EXPANDED_QUERIES = 1           # always at least the prepared query
-ENTITY_CONFIDENCE_FLOOR = 0.5      # entities below this are dropped
-MAX_SYNONYMS_PER_ENTITY = 3        # keep expansion controlled & leave room for
-                                   # mesh/combo/colloquial tiers
 
 # Expansion type tags — carried as provenance on every expanded query.
 EXP_ORIGINAL   = "original"
@@ -61,38 +56,10 @@ EXP_TRANSLATED = "translated"
 EXP_CANONICAL  = "canonical"
 EXP_SYNONYM    = "synonym"
 EXP_MESH       = "mesh"
-EXP_NEIGHBOR   = "neighbor"
+EXP_NEIGHBOR   = "neighbor"      # legacy tag, no longer generated
 EXP_COMBO      = "combo"
 EXP_COLLOQUIAL = "colloquial"
 EXP_LLM        = "llm"
-
-
-# ── Trichology supplement ────────────────────────────────────────────────────
-# Colloquial / patient-language phrasings that surface community testimony.
-# These are anchored to a recognised symptom concept (canonical) so they only
-# expand when that concept is present in the query — they never broaden scope
-# on their own. This is the "medical vs colloquial" bridge.
-_TRICHOLOGY_COLLOQUIAL: dict[str, list[str]] = {
-    "hair loss": [
-        "initial shedding", "increased hair loss", "hair shedding",
-        "temporary worsening", "increased hair fall", "hair fall out",
-        "caduta iniziale", "peggioramento della caduta",
-        "caduta aumentata", "perdita maggiore",
-    ],
-    "sexual dysfunction": [
-        "lost my libido", "low sex drive", "can't get it up",
-        "erection problems", "calo del desiderio",
-        "problemi in letto", "fame sessuale sparita",
-    ],
-    "telogen effluvium": [
-        "diffuse shedding", "hair falling out everywhere",
-        "caduta diffusa", "caduta massiccia",
-    ],
-    "androgenetic alopecia": [
-        "thinning crown", "receding hairline", "bald spot",
-        "diradamento", "tempie che arretrano", "chiericato",
-    ],
-}
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -130,8 +97,7 @@ class RWEQueryPlan:
     entities: list = field(default_factory=list)        # (type, canonical, conf)
     vocabulary: dict = field(default_factory=dict)
     expanded_queries: List[ExpandedQuery] = field(default_factory=list)
-    # QU-aware relevance (V3): structured intent, built ONLY when the
-    # HLEO_RWE_INTENT_SCORING feature flag is on; None = pure V1 behaviour.
+    # QU-aware relevance (V3): structured intent; None = pure V1 behaviour.
     intent: Optional[object] = None                   # RWEQueryIntent | None
 
     def query_strings(self) -> List[str]:
@@ -178,10 +144,12 @@ class RWEQueryPlan:
         }
 
 
-# ── Language detection (non-LLM, instant) ───────────────────────────────────
-
-# Stopword / marker sets per language. Used only for fast detection so the
-# plan carries an honest detected_language even when no OpenAI key is present.
+# ── Language detection (local heuristic — hint only) ─────────────────────────
+#
+# The AUTHORITATIVE language detector is the QueryOrchestrator (LLM, any
+# language). This stopword heuristic is only a fallback hint when the LLM has
+# no opinion ("und", e.g. no API key); it returns "und" when it has no
+# evidence rather than silently guessing "en".
 _LANG_MARKERS = {
     "it": {
         "di", "del", "della", "dei", "che", "per", "con", "senza", "dopo",
@@ -203,22 +171,28 @@ _LANG_MARKERS = {
         "pueden", "causar", "provocar", "pérdida", "cabello", "caída",
         "efectos", "secundarios",
     },
+    "en": {
+        "the", "and", "or", "with", "without", "after", "before", "can",
+        "could", "does", "do", "is", "are", "was", "were", "cause", "causes",
+        "caused", "effect", "effects", "side", "hair", "loss", "shedding",
+        "treatment", "my", "i", "me",
+    },
 }
 
 
 def detect_language(text: str) -> str:
     """
-    Fast stopword/marker-based language detection.
+    Fast stopword/marker-based language detection (HINT only).
 
-    Returns an ISO-639-1 code. Falls back to ``en`` when no marker matches
-    (English is the default source language of the RWE collectors).
+    Returns an ISO-639-1 code, or ``und`` when no marker matches — the caller
+    must not treat an unsupported language as English silently.
     """
     if not text or not text.strip():
         return "und"
     tokens = set(re.findall(r"[a-zà-öø-ÿ]+", text.lower()))
     if not tokens:
         return "und"
-    best_lang, best_score = "en", 0
+    best_lang, best_score = "und", 0
     for lang, markers in _LANG_MARKERS.items():
         score = len(tokens & markers)
         if score > best_score:
@@ -235,33 +209,14 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", ascii_text.lower().strip())
 
 
-def _prepare(query: str, lang: str) -> str:
-    """
-    Query preparation: normalise whitespace + apply the quick Italian→English
-    token map when the source language is Italian (reduces LLM dependency for
-    common medical terms). Non-Italian queries are returned normalised only.
-    """
-    q = re.sub(r"\s+", " ", (query or "").strip())
-    if lang == "it":
-        q = quick_translate_it(q)
-    return q
-
-
-def _strip_punct(text: str) -> str:
-    """Replace punctuation with spaces so biomedical_kb n-gram matching works
-    (the KB's _norm keeps punctuation attached to tokens, e.g. 'shedding?')."""
-    return re.sub(r"[^\w\sà-öø-ÿ-]", " ", text or "").strip()
-
-
-# ── Query Engine ─────────────────────────────────────────────────────────────
+# ── Engine ───────────────────────────────────────────────────────────────────
 
 class RWEQueryEngine:
     """
     Builds a controlled RWEQueryPlan from a user query.
 
-    Reuses ``QueryOrchestrator`` (language detection + translation) and the
-    ``biomedical_kb`` dictionaries (synonyms, MeSH, knowledge graph). Stateless
-    apart from the orchestrator's internal cache.
+    Terminology comes exclusively from the external vocabulary providers
+    (Catena C). Stateless apart from the orchestrator's internal cache.
     """
 
     def __init__(self, orchestrator: Optional[QueryOrchestrator] = None) -> None:
@@ -280,60 +235,66 @@ class RWEQueryEngine:
                 translation_applied=False,
             )
 
-        # ── 1. Language detection (quick, non-LLM) ───────────────────────────
-        lang = detect_language(q)
-
-        # ── 2. Query preparation (normalise + quick IT→EN token map) ────────
-        prepared = _prepare(q, lang)
-
-        # ── 3. Translation via the existing orchestrator ────────────────────
-        # The orchestrator detects language + translates to English with an LLM
-        # when an OpenAI key is present; otherwise it passes through. We trust
-        # its English output as ``translated_query`` but ALWAYS keep the
-        # original user input separate.
+        # ── 1. Language detection + translation (orchestrator, any language) ─
+        # The orchestrator's LLM detection is authoritative and NOT limited to
+        # a fixed language set. The local heuristic is only a hint when the
+        # orchestrator has no opinion ("und", e.g. no API key).
         orch = self._orchestrator.process(q)
-        translated = (orch.search_query or prepared or q).strip()
-        # Prefer the orchestrator's detected language when it is confident
-        # (not "und"), otherwise keep our quick-detection result.
-        if orch.detected_language and orch.detected_language != "und":
-            lang = orch.detected_language
+        translated = (orch.search_query or q).strip()
+        lang = (orch.detected_language or "und").lower()
+        if lang == "und":
+            lang = detect_language(q)
         translation_applied = bool(
             orch.translation_applied
             or translated.lower() != q.lower()
         )
 
-        # ── 4. Canonicalization (the translated representation remains intact)
-        entities = self._recognize_entities(translated, q)
-        canonical = self._canonicalize(translated, entities)
-
-        # ── 5. Vocabulary resolution, once per canonical entity ─────────────
-        # This is deliberately before expansion and retrieval.  ``None`` means
-        # the feature is off: no provider is instantiated or queried.
-        vocabulary = {}
-        resolutions = {}
-        from core.vocab.resolver import build_resolver_from_env
+        # ── 2. Entity recognition via external providers (Catena C) ─────────
+        # The English rendering is resolved as English; the original text is
+        # resolved in its own language so multilingual providers (ConceptNet)
+        # can map native phrasings (cross-language edges → translations).
         resolver = build_resolver_from_env()
+        entities: list = []
+        resolutions: dict = {}
+        surfaces: dict = {}
         if resolver is not None:
-            terms = list(dict.fromkeys([c for _, c, _ in entities]))
-            resolutions = resolver.resolve_terms(terms, language=lang)
-            vocabulary = self._slim_vocabulary(resolutions)
-            entities = self._enrich_entities(entities, resolutions)
+            rec_en = recognize(translated, "en", resolver)
+            if lang not in {"und", "en"} and translated.lower() != q.lower():
+                rec_src = recognize(q, lang, resolver)
+                rec = merge_recognitions(rec_en, rec_src)
+            else:
+                rec = rec_en
+            entities = rec.entities
+            resolutions = rec.resolutions
+            surfaces = rec.surfaces
 
-        # ── 6. Controlled query expansion (now consumes vocabulary evidence)
+        # ── 3. Canonicalisation (provider preferred terms; translation intact)
+        canonical = self._canonicalize(translated, entities, surfaces)
+
+        # ── 4. Controlled query expansion (provider terminology only) ────────
+        vocabulary = self._slim_vocabulary(resolutions)
         expanded = self._expand(
             original=q,
             translated=translated,
             canonical_query=canonical,
-            prepared=prepared,
             lang=lang,
             entities=entities,
             resolutions=resolutions,
         )
 
-        # ── 7. QU intent for the existing V3 relevance scorer ────────────────
+        # ── 5. QU intent for the V3 relevance scorer ─────────────────────────
+        # The LLM-structured intent is feature-flagged; additionally, when the
+        # query exposes a structured drug→event relation, a deterministic
+        # entities-fallback intent is ALWAYS built (no LLM call) so the V3
+        # relation-aware scorer activates even with the flag off. Queries
+        # without a recognised relation keep intent=None → exact V1 behaviour.
         intent = None
         if intent_scoring_enabled():
             intent = build_intent(translated, q, entities, use_llm=True)
+            if vocabulary:
+                intent.vocabulary = vocabulary
+        elif self._has_structured_relation(entities):
+            intent = build_intent(translated, q, entities, use_llm=False)
             if vocabulary:
                 intent.vocabulary = vocabulary
 
@@ -350,17 +311,16 @@ class RWEQueryEngine:
         )
 
     @staticmethod
-    def _canonicalize(translated: str, entities: list) -> str:
-        """Return a canonical representation without mutating translation."""
+    def _canonicalize(translated: str, entities: list, surfaces: dict) -> str:
+        """Replace provider-verified surface forms with their canonical
+        preferred term (e.g. "propecia" → "finasteride"). The translated
+        representation itself is never mutated."""
         out = translated
-        dictionaries = (DRUG_ALIASES, CONDITION_ALIASES, SYMPTOM_ALIASES)
-        for _etype, canonical, _ in entities:
-            aliases = [canonical]
-            for mapping in dictionaries:
-                aliases.extend(mapping.get(canonical, []))
-            for alias in sorted(set(aliases), key=len, reverse=True):
-                if alias and alias.lower() != canonical.lower():
-                    out = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", canonical,
+        for _etype, canonical, _conf in entities or []:
+            surface = (surfaces or {}).get(canonical, canonical)
+            for term in {surface, canonical}:
+                if term and term.lower() != canonical.lower():
+                    out = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", canonical,
                                  out, flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", out).strip()
 
@@ -368,24 +328,9 @@ class RWEQueryEngine:
     def _slim_vocabulary(resolutions: dict) -> dict:
         return {
             term: [m.model_dump() for m in resolution.matches]
-            for term, resolution in resolutions.items()
+            for term, resolution in (resolutions or {}).items()
             if resolution.matches
         }
-
-    @staticmethod
-    def _enrich_entities(entities: list, resolutions: dict) -> list:
-        """Use provider semantic groups as typed evidence, never replacement."""
-        out = list(entities)
-        known = {canonical for _, canonical, _ in out}
-        group_types = {"drug": "drug", "condition": "condition", "symptom": "symptom"}
-        for _term, resolution in resolutions.items():
-            for match in resolution.matches:
-                etype = group_types.get(match.semantic_group)
-                canonical = match.preferred_term.strip().lower()
-                if etype and canonical and canonical not in known:
-                    out.append((etype, canonical, match.confidence))
-                    known.add(canonical)
-        return out
 
     @staticmethod
     def _replace_entity(text: str, original: str, replacement: str) -> str:
@@ -394,27 +339,16 @@ class RWEQueryEngine:
                           text, count=1, flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", replaced).strip()
 
-    # ── Entity recognition ───────────────────────────────────────────────────
+    # ── Structured relation detection ────────────────────────────────────────
 
-    def _recognize_entities(self, translated: str, original: str) -> list:
-        """Hybrid KB entity lookup on translated + original text."""
-        # Strip trailing/leading punctuation that would break n-gram matching
-        # in biomedical_kb (e.g. "shedding?" != "shedding"). The KB's own _norm
-        # does not remove punctuation, so we clean it here.
-        translated = _strip_punct(translated)
-        original = _strip_punct(original)
-        hits = lookup_entity(translated)
-        hits_orig = lookup_entity(original)
-        # Merge — keep best confidence per canonical name
-        best: dict[str, tuple] = {h[1]: h for h in hits}
-        for h in hits_orig:
-            if h[1] not in best or h[2] > best[h[1]][2]:
-                best[h[1]] = h
-        return [
-            (etype, canonical, conf)
-            for etype, canonical, conf in best.values()
-            if conf >= ENTITY_CONFIDENCE_FLOOR
-        ]
+    @staticmethod
+    def _has_structured_relation(entities: list) -> bool:
+        """True when the query exposes a drug→event relation (an exposure AND
+        a symptom/adverse-effect outcome). Conditions alone (e.g. "hair loss")
+        do NOT count: they are the disease context, not a requested outcome."""
+        has_drug = any(t in ("drug", "active_ingredient") for t, _, _ in entities or [])
+        has_outcome = any(t in ("symptom", "adverse_effect") for t, _, _ in entities or [])
+        return has_drug and has_outcome
 
     # ── Controlled query expansion ───────────────────────────────────────────
 
@@ -423,7 +357,6 @@ class RWEQueryEngine:
         original: str,
         translated: str,
         canonical_query: str,
-        prepared: str,
         lang: str,
         entities: list,
         resolutions: Optional[dict] = None,
@@ -432,14 +365,14 @@ class RWEQueryEngine:
         Build the controlled set of expanded queries.
 
         Anchored to recognised entities: every expanded query is either the
-        original/translated query, a synonym of a recognised entity, a MeSH
-        term of a recognised entity, a graph neighbour of a recognised entity,
+        original/translated/canonical query, a provider-typed variant of a
+        recognised entity (synonym / translation / colloquial / MeSH concept),
         or a combo of recognised entities. Nothing broadens beyond them.
         """
         queries: List[ExpandedQuery] = []
         canonical_names = [c for _, c, _ in entities]
 
-        # ── A: original + translated (always present) ───────────────────────
+        # ── A: original + translated + canonical (always present) ───────────
         queries.append(ExpandedQuery(
             query=original,
             expansion_type=EXP_ORIGINAL,
@@ -471,55 +404,12 @@ class RWEQueryEngine:
             ))
 
         if not entities:
-            # No entities recognised — fall back to the prepared query so the
-            # collectors still receive something usable.
-            if prepared and prepared.lower() not in {q.query.lower() for q in queries}:
-                queries.append(ExpandedQuery(
-                    query=prepared,
-                    expansion_type=EXP_TRANSLATED,
-                    source_language="en",
-                    matched_entities=[],
-                ))
             return self._dedup_and_cap(queries, canonical_names)
 
-        # ── B: KB synonyms for each entity ─────────────────────────────────
-        for etype, canonical, _ in entities:
-            alias_dict = self._alias_dict_for(etype, canonical)
-            if alias_dict and canonical in alias_dict:
-                for alias in alias_dict[canonical][:MAX_SYNONYMS_PER_ENTITY]:
-                    if len(alias.split()) <= 4:
-                        queries.append(ExpandedQuery(
-                            query=self._replace_entity(canonical_query := (canonical_query or translated), canonical, alias),
-                            expansion_type=EXP_SYNONYM,
-                            source_language="en",
-                            matched_entities=[canonical],
-                            original_term=canonical,
-                            expanded_term=alias,
-                            match_kind="synonym",
-                            tier=0.9,
-                            source_entity=canonical,
-                            query_origin="kb",
-                        ))
-
-        # ── C: MeSH terms ──────────────────────────────────────────────────
-        for etype, canonical, _ in entities:
-            for mesh in get_mesh_terms(canonical):
-                queries.append(ExpandedQuery(
-                    query=self._replace_entity(canonical_query or translated, canonical, mesh),
-                    expansion_type=EXP_MESH,
-                    source_language="en",
-                    matched_entities=[canonical],
-                    original_term=canonical,
-                    expanded_term=mesh,
-                    match_kind="concept",
-                    tier=0.6,
-                    source_entity=canonical,
-                    query_origin="kb",
-                ))
-
-        # ── B2: external vocabulary terms used for real retrieval ──────────
-        # Expand one entity at a time, preserving all other query context. A
-        # related concept is deliberately not lexicalized as a synonym.
+        # ── B: provider-typed variants, one entity at a time ────────────────
+        # Synonyms, translations, orthographic variants, colloquial/slang and
+        # MeSH descriptor concepts — each preserving the rest of the query.
+        # related_concept is deliberately NOT lexicalized (evidence only).
         from core.vocab.models import MATCH_TIERS
         for _etype, source_entity, _ in entities:
             resolution = (resolutions or {}).get(source_entity)
@@ -529,6 +419,14 @@ class RWEQueryEngine:
                 tier = MATCH_TIERS.get(match.match_kind)
                 if tier is None:
                     continue
+                if match.match_kind == "concept" and match.provider == "mesh":
+                    exp_type = EXP_MESH
+                elif match.match_kind in {"exact", "canonical", "preferred",
+                                          "synonym", "normalized"}:
+                    # identity-level variants of the entity → synonym tier
+                    exp_type = EXP_SYNONYM
+                else:
+                    exp_type = match.match_kind
                 for term in [match.preferred_term, *match.synonyms]:
                     term = (term or "").strip()
                     if len(term) < 3 or term.lower() == source_entity.lower():
@@ -541,8 +439,7 @@ class RWEQueryEngine:
                         )
                     queries.append(ExpandedQuery(
                         query=expanded_query,
-                        expansion_type=(EXP_SYNONYM if match.match_kind == "synonym"
-                                        else match.match_kind),
+                        expansion_type=exp_type,
                         source_language=match.language or "en",
                         matched_entities=[source_entity],
                         original_term=source_entity,
@@ -554,24 +451,10 @@ class RWEQueryEngine:
                         query_origin="vocabulary",
                     ))
 
-        # ── D: Knowledge graph neighbours (1-hop, anchored) ────────────────
-        all_known = (
-            set(DRUG_ALIASES) | set(CONDITION_ALIASES) | set(SYMPTOM_ALIASES)
-        )
-        for _etype, entity_name, _ in entities:
-            neighbors = get_neighbors(entity_name, depth=1) & all_known
-            for neighbor in neighbors:
-                queries.append(ExpandedQuery(
-                    query=f"{entity_name} {neighbor}",
-                    expansion_type=EXP_NEIGHBOR,
-                    source_language="en",
-                    matched_entities=[entity_name, neighbor],
-                ))
-
-        # ── E: Entity combos (drug + symptom / drug + condition) ───────────
+        # ── C: Entity combos (drug + symptom / drug + condition) ────────────
         if len(canonical_names) > 1:
-            for i, (t1, c1, _) in enumerate(entities):
-                for j, (t2, c2, _) in enumerate(entities):
+            for i, (_t1, c1, _) in enumerate(entities):
+                for j, (_t2, c2, _) in enumerate(entities):
                     if i < j and c1 != c2:
                         queries.append(ExpandedQuery(
                             query=f"{c1} {c2}",
@@ -580,39 +463,9 @@ class RWEQueryEngine:
                             matched_entities=[c1, c2],
                         ))
 
-        # ── F: Trichology colloquial supplement (anchored to symptoms) ─────
-        for etype, canonical, _ in entities:
-            colloquial = _TRICHOLOGY_COLLOQUIAL.get(canonical)
-            if colloquial:
-                # pair with any drug entity so the query stays specific
-                drugs = [c for t, c, _ in entities if t == "drug"]
-                for phrase in colloquial:
-                    if drugs:
-                        queries.append(ExpandedQuery(
-                            query=f"{drugs[0]} {phrase}",
-                            expansion_type=EXP_COLLOQUIAL,
-                            source_language="en",
-                            matched_entities=[canonical, drugs[0]],
-                        ))
-                    else:
-                        queries.append(ExpandedQuery(
-                            query=phrase,
-                            expansion_type=EXP_COLLOQUIAL,
-                            source_language="en",
-                            matched_entities=[canonical],
-                        ))
-
         return self._dedup_and_cap(queries, canonical_names)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _alias_dict_for(etype: str, canonical: str):
-        """Return the alias dict that contains ``canonical`` for ``etype``."""
-        for d in (DRUG_ALIASES, CONDITION_ALIASES, SYMPTOM_ALIASES):
-            if canonical in d:
-                return d
-        return None
 
     @staticmethod
     def _dedup_and_cap(
@@ -623,8 +476,8 @@ class RWEQueryEngine:
 
         Ordering preserves the provenance value of each expansion type:
         original/translated first, then synonym/mesh/combo (specific), then
-        colloquial, then neighbour (broader). Within each tier, queries
-        containing more entity names rank first.
+        colloquial, then broader tiers. Within each tier, queries containing
+        more entity names rank first.
         """
         seen: set[str] = set()
         unique: List[ExpandedQuery] = []

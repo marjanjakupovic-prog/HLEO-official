@@ -20,11 +20,6 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
-from core.biomedical_kb import (
-    DRUG_ALIASES,
-    CONDITION_ALIASES,
-    SYMPTOM_ALIASES,
-)
 from core.orchestrator import QueryOrchestrator  # noqa: F401  (patched by tests via core.rwe.pipeline.QueryOrchestrator)
 from core.rwe.intent import GENERIC_EVENT_TERMS, merged_sides
 from core.rwe.models import RWEItem, RWESearchResult
@@ -75,16 +70,45 @@ _COMPARISON_RELATION_CUES = {
     "head-to-head", "noninferiority", "randomized", "randomised",
 }
 
+_ROUTE_CUES = {
+    "oral": {
+        "oral", "orally", "pill", "pills", "tablet", "tablets", "capsule",
+        "capsules", "per os", "per bocca", "compresse", "pastiglie",
+    },
+    "topical": {
+        "topical", "topically", "foam", "lotion", "solution", "spray",
+        "serum", "schiuma", "lozione", "soluzione", "fiala", "fiale",
+    },
+}
+
+_TEMPORAL_AFTER_CUES = {
+    "after", "since", "following", "after starting", "after taking",
+    "after applying", "after using", "weeks later", "months later",
+    "dopo", "da quando", "dopo aver", "après", "depuis", "después",
+}
+
 
 def _cue_hits(text: str, cues: set[str]) -> List[str]:
     lower = (text or "").lower()
     return sorted({cue for cue in cues if cue and cue in lower})[:6]
 
 
-def _relation_bonus(body: str, source_type: str, relation_type: str) -> Tuple[float, List[str]]:
-    """Return a small additive bonus for modality-aware relation cues."""
+def _relation_bonus(
+    body: str,
+    source_type: str,
+    relation_type: str,
+    route: str = "unknown",
+    temporal_relation: str = "unknown",
+) -> Tuple[float, List[str]]:
+    """Return a small additive bonus for modality-aware relation cues.
+
+    Component maxima: testimonial 0.15 + relation cues 0.10 + route 0.05 +
+    temporal 0.05 = 0.35, capped at 0.25 — so the maximum final bonus is
+    exactly 0.25 by construction."""
     source_type = (source_type or "").lower().strip()
     relation_type = (relation_type or "").lower().strip()
+    route = (route or "unknown").lower().strip()
+    temporal_relation = (temporal_relation or "unknown").lower().strip()
     bonus = 0.0
     reasons: List[str] = []
 
@@ -106,7 +130,21 @@ def _relation_bonus(body: str, source_type: str, relation_type: str) -> Tuple[fl
         bonus += min(0.10, 0.03 * len(relation_hits))
         reasons.append(f"relation={relation_hits[:3]}")
 
-    return round(min(0.20, bonus), 3), reasons
+    # Route-of-administration cue: the query's route must be confirmed in the
+    # record text (e.g. "after starting oral minoxidil").
+    route_hits = _cue_hits(body, _ROUTE_CUES.get(route, set()))
+    if route in _ROUTE_CUES and route_hits:
+        bonus += 0.05
+        reasons.append(f"route={route}:{route_hits[:2]}")
+
+    # Temporal cue: exposure → outcome ordering expressed in the record.
+    if temporal_relation == "after":
+        temporal_hits = _cue_hits(body, _TEMPORAL_AFTER_CUES)
+        if temporal_hits:
+            bonus += 0.05
+            reasons.append(f"temporal=after:{temporal_hits[:2]}")
+
+    return round(min(0.25, bonus), 3), reasons
 
 
 def _tokens(text: str) -> set:
@@ -114,27 +152,34 @@ def _tokens(text: str) -> set:
             if len(w) > 2 and w not in _STOPWORDS}
 
 
-def _entity_terms(entities) -> List[str]:
-    """Flat list of lowercase canonical names + their aliases for matching."""
+def _vocab_scored_terms(vocabulary: Optional[dict], canonical: str) -> List[str]:
+    """Provider-typed variants of a canonical term from the slim vocabulary
+    attached to the query plan (Catena C — no local dictionaries)."""
+    if not vocabulary or not canonical:
+        return []
+    entries = vocabulary.get(canonical.lower())
+    if not entries:
+        return []
+    from core.vocab.models import VocabularyResolution
+    return list(VocabularyResolution.from_slim(canonical, entries).scored_terms())
+
+
+def _entity_terms(entities, vocabulary: Optional[dict] = None) -> List[str]:
+    """Flat list of lowercase canonical names + provider variants for matching."""
     terms: List[str] = []
-    for etype, canonical, _ in entities or []:
+    for _etype, canonical, _ in entities or []:
         terms.append(canonical.lower())
-        for d in (DRUG_ALIASES, CONDITION_ALIASES, SYMPTOM_ALIASES):
-            if canonical in d:
-                for alias in d[canonical][:5]:
-                    if len(alias) > 3:
-                        terms.append(alias.lower())
-                break
+        terms.extend(_vocab_scored_terms(vocabulary, canonical))
     return terms
 
 
-def _split_entities(entities) -> Tuple[List[str], List[str], List[str]]:
+def _split_entities(entities, vocabulary: Optional[dict] = None) -> Tuple[List[str], List[str], List[str]]:
     """Split recognised entities into (drug_terms, event_terms, context_terms).
 
     event_terms = symptoms + conditions (the 'event' side of a drug→event query).
     drug_terms  = drugs + active ingredients (the 'exposure' side).
     context_terms = any other entity types (procedures, organs, …) — light context boost.
-    Each list carries the canonical name plus a few aliases, lowercase.
+    Each list carries the canonical name plus its provider-typed variants.
     """
     drugs: List[str] = []
     events: List[str] = []
@@ -143,70 +188,22 @@ def _split_entities(entities) -> Tuple[List[str], List[str], List[str]]:
         canon = canonical.lower()
         if etype == "drug" or etype == "active_ingredient":
             drugs.append(canon)
-            for alias in DRUG_ALIASES.get(canonical, [])[:5]:
-                if len(alias) > 3:
-                    drugs.append(alias.lower())
+            drugs.extend(_vocab_scored_terms(vocabulary, canon))
         elif etype in ("symptom", "adverse_effect", "disease", "condition"):
             events.append(canon)
-            for alias in SYMPTOM_ALIASES.get(canonical, [])[:5]:
-                if len(alias) > 3:
-                    events.append(alias.lower())
-            for alias in CONDITION_ALIASES.get(canonical, [])[:5]:
-                if len(alias) > 3:
-                    events.append(alias.lower())
+            events.extend(_vocab_scored_terms(vocabulary, canon))
         else:
             context.append(canon)
     return drugs, events, context
 
 
-# Semantic equivalents: terms that, when the event side of the query mentions
-# one of these, are treated as a match when found in a record's text/reactions.
-# This is the "hair shedding ≈ hair loss ≈ alopecia ≈ hair fall" bridge.
-_EVENT_SYNONYM_GROUPS: List[Tuple[List[str], List[str]]] = [
-    (
-        ["hair loss", "hair shedding", "alopecia", "hair fall", "hairfall",
-         "caduta capelli", "perdita di capelli", "perdita capelli",
-         "caduta dei capelli", "perdita dei capelli",
-         "chute de cheveux", "perte de cheveux", "perte de cheveu",
-         "haarausfall", "caída del cabello", "pérdida de cabello",
-         "hairedropping", "hairfallout"],
-        ["hair loss", "hair shedding", "alopecia", "hair fall", "hairfall",
-         "caduta", "perdita", "chute", "haarausfall", "caída",
-         "shedding", "thinning", "bald", "fell out", "fall out", "falling out",
-         "capelli", "cheveux"],
-    ),
-    (
-        ["sexual dysfunction", "disfunzione sessuale",
-         "libido loss", "lost libido", "low sex drive",
-         "calo del desiderio", "desiderio sessuale", "fame sessuale",
-         "dysfonction sexuelle", "libido vermindert",
-         "disfunción sexual", "disfunção sexual"],
-        ["sexual dysfunction", "libido", "sex drive", "erection", "erectile",
-         "impotence", "impotenza", "désir", "desiderio",
-         "sessual", "sex", "libido"],
-    ),
-    (
-        ["depression", "depresso", "deprimé", "deprimida"],
-        ["depression", "depressive", "depressed", "depress", "depresso",
-         "deprim", "mood"],
-    ),
-]
-
-
 def _event_match_terms(query_event_terms: List[str]) -> set:
-    """Expand query-side event terms to include their semantic equivalents.
+    """Match terms for the query's event side.
 
-    Returns a set of lowercase substrings/tokens to look for in the record.
-    When a query event term (canonical or alias) belongs to a known synonym
-    group, all members of that group (and their match-tokens) are admitted.
-    """
-    out = set(t.lower() for t in query_event_terms if t)
-    for members, match_tokens in _EVENT_SYNONYM_GROUPS:
-        # Does the query reference any member of this concept group?
-        if any(m.lower() in out for m in members):
-            out.update(m.lower() for m in members)
-            out.update(t.lower() for t in match_tokens)
-    return out
+    Semantic equivalents (synonyms, translations, colloquial phrasings) are
+    already present in the side-set itself — injected upstream from the
+    external vocabulary providers (Catena C). No local synonym groups."""
+    return {t.lower() for t in query_event_terms if t}
 
 
 def _event_match(item_text_lower: str, query_event_terms: List[str]) -> Tuple[float, List[str]]:
@@ -249,6 +246,7 @@ def _score_item(
     query: str,
     entities: list,
     is_authoritative_match: bool,
+    vocabulary: Optional[dict] = None,
 ) -> Tuple[float, str]:
     """
     Semi-semantic relevance score (0.0–1.0) + human match reason.
@@ -273,7 +271,7 @@ def _score_item(
     overlap = q_tokens & body_tokens
     token_score = len(overlap) / max(1, len(q_tokens)) if q_tokens else 0.0
 
-    drug_terms, event_terms, context_terms = _split_entities(entities)
+    drug_terms, event_terms, context_terms = _split_entities(entities, vocabulary)
 
     drug_score, drug_hits = _drug_match(body, treatment_lower, drug_terms)
     event_score, event_hits = _event_match(body, event_terms)
@@ -318,7 +316,7 @@ def _score_item(
         return round(min(1.0, base), 3), reason
 
     # No structured entities — fall back to token/entity overlap.
-    ent_terms = _entity_terms(entities)
+    ent_terms = _entity_terms(entities, vocabulary)
     ent_hits = [t for t in ent_terms if t and t in body]
     entity_score = min(1.0, len(ent_hits) / 3.0) if ent_terms else 0.0
     if token_score >= 0.5 and entity_score > 0:
@@ -337,66 +335,32 @@ def _score_item(
 
 
 # Generic "any adverse event" outcome terms (e.g. "finasteride side effects"):
-# the user asks about ANY event, so the event side is satisfied by any known
-# adverse-event vocabulary rather than by one literal phrase.
+# the user asks about ANY event, so the event side is satisfied by an open
+# event-set rather than by one literal phrase.
 # Canonical definition lives in core.rwe.intent (shared with merged_sides,
 # which must not inject vocabulary synonyms into generic-event side-sets).
 _GENERIC_EVENT_TERMS = GENERIC_EVENT_TERMS
 
-# Standard adverse-event vocabulary used ONLY for generic any-event queries
-# ("finasteride side effects"): the event side is satisfied when the record
-# mentions any common adverse reaction. MedDRA-style common terms, EN+IT.
-_GENERIC_EVENT_VOCAB = {
-    "nausea", "vomiting", "vomito", "diarrhoea", "diarrhea", "diarrea",
-    "headache", "mal di testa", "dizziness", "dizzy", "vertigo", "vertigini",
-    "capogiri", "insomnia", "insonnia", "fatigue", "stanchezza", "anxiety",
-    "ansia", "anxious", "rash", "eruzione", "pruritus", "itching", "prurito",
-    "palpitations", "palpitazioni", "brain fog", "nebbia mentale",
-    "gynecomastia", "ginecomastia", "edema", "oedema", "gonfiore",
-    "weight gain", "weight loss", "aumento di peso", "adverse",
-}
-
 
 def _v3_event_terms(event_side: set) -> set:
-    """Match terms for the event side, with group semantics extended to QU
-    phrasings the production exact-membership check would miss.
-
-    Production ``_event_match_terms`` admits a synonym group only when a query
-    term IS a group member. QU terms like "initial shedding" or
-    "androgenetic alopecia" are not members, so V3 additionally triggers a
-    group when a term CONTAINS a member ("androgenetic alopecia" ⊃ "alopecia")
-    or a term's head word IS CONTAINED in a member ("shedding" ⊂ "hair
-    shedding"). Split head words are used ONLY as trigger probes, never as
-    match terms themselves (a word like "hair" would match everything).
-    """
-    terms = {t for t in event_side if t}
-    # Head words are trigger PROBES only: a probe triggers a group when it is
-    # a PROPER substring of a member ("shedding" ⊂ "hair shedding"). A probe
-    # equal to a member ("alopecia" from "androgenetic alopecia") must NOT
-    # widen the term to the whole generic group — the term is more specific.
-    probes = set()
-    for t in terms:
-        probes.update(w for w in t.split() if len(w) > 3)
-    out = set(terms)
-    for members, match_tokens in _EVENT_SYNONYM_GROUPS:
-        exact = any(t == m for t in terms for m in members)
-        headword = any(p != m and p in m for p in probes for m in members)
-        if exact or headword:
-            out.update(m.lower() for m in members)
-            out.update(t.lower() for t in match_tokens)
-    return out
+    """Match terms for the event side: the side-set itself, already enriched
+    upstream with provider-typed variants (Catena C)."""
+    return {t for t in event_side if t}
 
 
 def _v3_event_score(body: str, condition_field: str, event_side: set,
                     is_authoritative_match: bool,
                     tiers: Optional[Dict[str, float]] = None,
+                    generic_vocab: Optional[set] = None,
                     ) -> Tuple[float, List[str]]:
     """Event-side score for V3, including the generic-any-event case.
 
     ``tiers`` (optional, from external vocabulary evidence) weights each
     matched term: terms absent from the map weight 1.0, so without
     vocabulary evidence the score is byte-identical to the pre-vocabulary
-    behaviour."""
+    behaviour. ``generic_vocab`` is the provider-derived open event-set
+    (generic canonical's provider terms + the anchor drug's related
+    concepts) used ONLY for generic any-event queries."""
     def _score(hits: List[str]) -> float:
         if tiers:
             w = sum(tiers.get(h, 1.0) for h in hits)
@@ -408,14 +372,11 @@ def _v3_event_score(body: str, condition_field: str, event_side: set,
         return 0.5, []
     if event_side <= _GENERIC_EVENT_TERMS:
         # "Any adverse event" query: authoritative reports ARE adverse-event
-        # reports by definition; other sources must mention some known event
-        # vocabulary (union of all semantic groups + the generic terms).
+        # reports by definition; other sources must mention a provider-known
+        # event term of the queried exposure.
         if is_authoritative_match:
             return 1.0, ["(any adverse event — authoritative report)"]
-        vocab = set(_GENERIC_EVENT_TERMS) | _GENERIC_EVENT_VOCAB
-        for members, match_tokens in _EVENT_SYNONYM_GROUPS:
-            vocab.update(m.lower() for m in members)
-            vocab.update(t.lower() for t in match_tokens)
+        vocab = set(_GENERIC_EVENT_TERMS) | set(generic_vocab or set())
         hits = sorted({t for t in vocab if t and t in body})[:6]
         return (_score(hits), hits) if hits else (0.0, [])
     terms = _v3_event_terms(event_side)
@@ -451,6 +412,9 @@ def _score_item_v3(
     condition_lower = (it.condition or "").lower()
     source_type = (getattr(it, "source_type", "") or "").lower()
     relation_type = str(getattr(intent, "relation_type", "") or "").lower()
+    route = str(getattr(intent, "route", "") or "unknown").lower()
+    temporal_relation = str(
+        getattr(intent, "temporal_relation", "") or "unknown").lower()
     body_tokens = _tokens(
         f"{it.title} {it.text} {treatment_lower} {condition_lower}"
     )
@@ -483,15 +447,18 @@ def _score_item_v3(
             if sem_score > anchor_score:
                 anchor_score, anchor_hits = sem_score, sem_hits
 
-    # ── event side (QU outcomes/conditions, extended semantic groups) ───────
+    # ── event side (QU outcomes/conditions + provider-typed variants) ───────
     event_score, event_hits = _v3_event_score(
-        body, condition_lower, event_side, is_authoritative_match, tiers)
+        body, condition_lower, event_side, is_authoritative_match, tiers,
+        generic_vocab=sides.get("generic_vocab"))
 
     # ── modality-aware RWE bonus: direct testimonies and relation cues ──────
     relation_bonus = 0.0
     relation_reasons: List[str] = []
     if body and (event_score > 0.0 or anchor_score > 0.0 or token_score > 0.0):
-        relation_bonus, relation_reasons = _relation_bonus(body, source_type, relation_type)
+        relation_bonus, relation_reasons = _relation_bonus(
+            body, source_type, relation_type,
+            route=route, temporal_relation=temporal_relation)
 
     # ── structured-field boost (small, bounded) ─────────────────────────────
     boost = 0.0
@@ -542,6 +509,7 @@ def relevance_filter(
     authoritative_sources: Optional[set] = None,
     min_score: float = 0.20,
     intent=None,
+    vocabulary: Optional[dict] = None,
 ) -> List[RWEItem]:
     """
     Semi-semantic relevance filter — respects the FULL intent of the query.
@@ -593,9 +561,17 @@ def relevance_filter(
         if v3_sides is not None:
             score, reason = _score_item_v3(it, query, v3_sides, is_auth, intent)
         else:
-            score, reason = _score_item(it, query, entities, is_auth)
+            score, reason = _score_item(it, query, entities, is_auth,
+                                        vocabulary=vocabulary)
         it.relevance_score = score
         it.match_reason = reason
+        if intent is not None:
+            it.metadata = dict(it.metadata or {})
+            it.metadata["intent_relation_type"] = getattr(
+                intent, "relation_type", None)
+            it.metadata["intent_route"] = getattr(intent, "route", None)
+            it.metadata["intent_temporal_relation"] = getattr(
+                intent, "temporal_relation", None)
         if score >= min_score:
             it.relevance = "relevant"
             it.relevance_reason = reason
@@ -801,6 +777,7 @@ class RWEPipeline:
             relevance_query,
             entities=plan.entities,
             intent=getattr(plan, "intent", None),
+            vocabulary=getattr(plan, "vocabulary", None),
             min_score=0.20,
         )
         all_items.sort(key=lambda it: it.relevance_score, reverse=True)

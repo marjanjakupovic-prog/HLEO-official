@@ -23,18 +23,57 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from core.biomedical_kb import (
-    CONDITION_ALIASES,
-    DRUG_ALIASES,
-    SYMPTOM_ALIASES,
-)
-
 logger = logging.getLogger(__name__)
 
 INTENT_SCORING_ENV = "HLEO_RWE_INTENT_SCORING"
 INTENT_MODEL = "gpt-4o-mini"
 
 _ALLOWED_RELATIONS = {"side_effect", "treatment", "outcome", "comparison", "unknown"}
+_ALLOWED_ROUTES = {"oral", "topical", "unknown"}
+_ALLOWED_TEMPORAL = {"after", "during", "before", "unknown"}
+
+# Lexical cues for deterministic route / temporal inference (no LLM needed —
+# these are surface-level patient phrasings).
+_ROUTE_ORAL_CUES = {
+    "oral", "orally", "pill", "pills", "tablet", "tablets", "capsule",
+    "capsules", "per os", "per bocca", "compresse", "pastiglie", "pillola",
+}
+_ROUTE_TOPICAL_CUES = {
+    "topical", "topically", "foam", "lotion", "solution", "spray", "serum",
+    "schiuma", "lozione", "soluzione", "fiala", "fiale",
+}
+_TEMPORAL_AFTER_CUES = {
+    "after", "since", "following", "post", "dopo", "da quando", "dopo aver",
+    "après", "depuis", "después", "nach", "seit",
+}
+_TEMPORAL_BEFORE_CUES = {"before", "prior", "prima", "avant", "antes", "vorher"}
+_TEMPORAL_DURING_CUES = {
+    "during", "while", "durante", "mentre", "pendant", "mientras", "während",
+}
+
+
+def infer_route(*texts: str) -> str:
+    """Deterministic route-of-administration inference from query text.
+    Returns "oral" | "topical" | "unknown"."""
+    lower = " ".join(t for t in texts if t).lower()
+    if any(cue in lower for cue in _ROUTE_ORAL_CUES):
+        return "oral"
+    if any(cue in lower for cue in _ROUTE_TOPICAL_CUES):
+        return "topical"
+    return "unknown"
+
+
+def infer_temporal_relation(*texts: str) -> str:
+    """Deterministic temporal-relation inference from query text.
+    Returns "after" | "before" | "during" | "unknown"."""
+    lower = " ".join(t for t in texts if t).lower()
+    if any(cue in lower for cue in _TEMPORAL_AFTER_CUES):
+        return "after"
+    if any(cue in lower for cue in _TEMPORAL_DURING_CUES):
+        return "during"
+    if any(cue in lower for cue in _TEMPORAL_BEFORE_CUES):
+        return "before"
+    return "unknown"
 
 # Generic "any adverse event" terms (e.g. "finasteride side effects"): the
 # user asks about ANY event. Such canonicals keep their generic semantics in
@@ -71,6 +110,8 @@ class RWEQueryIntent(BaseModel):
     conditions: List[str] = Field(default_factory=list)
     synonyms: Dict[str, List[str]] = Field(default_factory=dict)
     relation_type: Optional[str] = None   # explainability only, never ranked
+    route: Optional[str] = None           # "oral" | "topical" | "unknown" | None
+    temporal_relation: Optional[str] = None  # "after" | "during" | "before" | "unknown" | None
     source: str = "kb_fallback"           # "llm" | "kb_fallback"
     confidence: float = 0.0
     vocabulary: Dict[str, List[dict]] = Field(default_factory=dict)
@@ -82,6 +123,22 @@ class RWEQueryIntent(BaseModel):
             return None
         v = str(v).lower().strip()
         return v if v in _ALLOWED_RELATIONS else "unknown"
+
+    @field_validator("route")
+    @classmethod
+    def _check_route(cls, v):
+        if v is None:
+            return None
+        v = str(v).lower().strip()
+        return v if v in _ALLOWED_ROUTES else "unknown"
+
+    @field_validator("temporal_relation")
+    @classmethod
+    def _check_temporal(cls, v):
+        if v is None:
+            return None
+        v = str(v).lower().strip()
+        return v if v in _ALLOWED_TEMPORAL else "unknown"
 
 
 def _clean_term(t) -> Optional[str]:
@@ -192,9 +249,14 @@ def extract_intent_llm(
         return None
 
 
-def intent_from_kb(entities: list) -> RWEQueryIntent:
-    """Deterministic fallback: rebuild the three intent sides from the KB
-    entities of the query plan. Equivalent information to what V1 uses."""
+def intent_from_entities(entities: list, *query_texts: str) -> RWEQueryIntent:
+    """Deterministic fallback: rebuild the three intent sides from the
+    provider-recognised entities of the query plan (no LLM call).
+
+    When the query exposes a drug→event structure (an intervention AND an
+    outcome), ``relation_type`` is set to "side_effect" so the modality-aware
+    relation cues can be scored. Route and temporal cues are inferred
+    deterministically from the query text when provided."""
     iv: List[str] = []
     oc: List[str] = []
     cd: List[str] = []
@@ -206,10 +268,14 @@ def intent_from_kb(entities: list) -> RWEQueryIntent:
             oc.append(c)
         elif etype in ("condition", "disease"):
             cd.append(c)
+    relation_type = "side_effect" if (iv and oc) else None
+    route = infer_route(*query_texts) if query_texts else None
+    temporal = infer_temporal_relation(*query_texts) if query_texts else None
     return RWEQueryIntent(
         interventions=iv, outcomes=oc, conditions=cd,
-        synonyms={}, relation_type=None,
-        source="kb_fallback", confidence=0.5,
+        synonyms={}, relation_type=relation_type,
+        route=route, temporal_relation=temporal,
+        source="entities_fallback", confidence=0.5,
     )
 
 
@@ -250,7 +316,14 @@ def build_intent(
     if use_llm:
         intent = extract_intent_llm(translated_query, original_query, client=client)
     if intent is None:
-        intent = intent_from_kb(entities)
+        intent = intent_from_entities(entities, translated_query, original_query)
+    # Route / temporal cues are lexical: infer them deterministically when the
+    # LLM (or the KB fallback) did not provide them.
+    if intent.route is None:
+        intent.route = infer_route(translated_query, original_query)
+    if intent.temporal_relation is None:
+        intent.temporal_relation = infer_temporal_relation(
+            translated_query, original_query)
     if resolver is not None:
         try:
             canonicals = (intent.interventions + intent.outcomes
@@ -263,12 +336,14 @@ def build_intent(
 
 
 def merged_sides(intent: RWEQueryIntent, entities: list) -> Dict[str, set]:
-    """Term sets for V3 scoring: intent sides + their synonyms (QU and KB),
-    UNIONED with the KB entities of the plan (the LLM supplements the KB,
-    it never replaces it). Returns {"iv", "oc", "cd"} sets of lowercase terms
-    plus "tiers": a term → evidence-weight map populated ONLY from external
-    vocabulary evidence (feature-flagged). Terms absent from "tiers" default
-    to weight 1.0, so without vocabulary evidence the scoring is unchanged.
+    """Term sets for V3 scoring: intent sides + their synonyms (QU and
+    provider vocabulary), UNIONED with the provider-recognised entities of
+    the plan. Returns {"iv", "oc", "cd"} sets of lowercase terms plus
+    "tiers": a term → evidence-weight map populated ONLY from external
+    vocabulary evidence, and "generic_vocab": the provider-derived open
+    event-set for generic any-event queries ("finasteride side effects").
+    Terms absent from "tiers" default to weight 1.0, so without vocabulary
+    evidence the scoring is unchanged.
     """
     iv = set(_clean_terms(intent.interventions))
     oc = set(_clean_terms(intent.outcomes))
@@ -278,9 +353,10 @@ def merged_sides(intent: RWEQueryIntent, entities: list) -> Dict[str, set]:
     # by scored_terms in core.vocab.models). A provider term joins the SAME
     # side as the canonical it resolves — it never jumps sides.
     tiers: Dict[str, float] = {}
+    generic_vocab: set = set()
     vocabulary = getattr(intent, "vocabulary", None) or {}
     if vocabulary:
-        from core.vocab.models import VocabularyMatch, VocabularyResolution
+        from core.vocab.models import VocabularyResolution
         side_of = {t: iv for t in iv}
         side_of.update({t: oc for t in oc})
         side_of.update({t: cd for t in cd})
@@ -289,16 +365,32 @@ def merged_sides(intent: RWEQueryIntent, entities: list) -> Dict[str, set]:
             if bucket is None:
                 continue
             if canonical in GENERIC_EVENT_TERMS:
-                continue  # generic any-event canonical: evidence only, no injection
-            res = VocabularyResolution(
-                term=canonical,
-                matches=[VocabularyMatch(**e) for e in entries],
-            )
+                # Generic any-event canonical: its provider terms feed the
+                # OPEN event-set, never the side itself.
+                for e in entries:
+                    for t in [e.get("preferred_term"), *(e.get("synonyms") or [])]:
+                        t = (t or "").lower().strip()
+                        if len(t) >= 3:
+                            generic_vocab.add(t)
+                continue
+            res = VocabularyResolution.from_slim(canonical, entries)
             for term, weight in res.scored_terms().items():
                 if term != canonical:
                     bucket.add(term)
                 if term not in tiers or weight > tiers[term]:
                     tiers[term] = weight
+        # Anchor (intervention) related concepts: for a generic any-event
+        # query the user asks about ANY event of the exposure — the drug's
+        # provider-typed related concepts ARE that open event-set. They are
+        # NOT used as synonyms anywhere (related_concept stays unscored).
+        for canonical in iv:
+            for e in vocabulary.get(canonical, []):
+                if e.get("match_kind") != "related_concept":
+                    continue
+                for t in [e.get("preferred_term"), *(e.get("synonyms") or [])]:
+                    t = (t or "").lower().strip()
+                    if len(t) >= 3:
+                        generic_vocab.add(t)
 
     # QU synonyms, bucketed by where their canonical lives
     for canonical, aliases in (intent.synonyms or {}).items():
@@ -309,28 +401,16 @@ def merged_sides(intent: RWEQueryIntent, entities: list) -> Dict[str, set]:
         if bucket is not None:
             bucket.update(_clean_terms(aliases, _MAX_SYNONYMS))
 
-    # KB entities + aliases as a supplement (fallback vocabulary)
-    kb_alias_map = (
-        ({"drug", "active_ingredient"}, DRUG_ALIASES, iv),
-        ({"symptom", "adverse_effect"}, SYMPTOM_ALIASES, oc),
-        ({"condition", "disease"}, CONDITION_ALIASES, cd),
-    )
+    # Provider-recognised entities join their side (canonical form only —
+    # their variants already arrived via the vocabulary evidence above).
     for etype, canonical, _conf in entities or []:
-        for types, alias_dict, bucket in kb_alias_map:
-            if etype in types:
-                bucket.add(canonical.lower())
-                for alias in alias_dict.get(canonical, [])[:_MAX_SYNONYMS]:
-                    t = _clean_term(alias)
-                    if t:
-                        bucket.add(t)
+        c = (canonical or "").lower()
+        if etype in ("drug", "active_ingredient"):
+            iv.add(c)
+        elif etype in ("symptom", "adverse_effect"):
+            oc.add(c)
+        elif etype in ("condition", "disease"):
+            cd.add(c)
 
-    # KB aliases for QU canonicals known to the KB
-    for bucket, alias_dict in ((iv, DRUG_ALIASES), (oc, SYMPTOM_ALIASES), (cd, CONDITION_ALIASES)):
-        for term in list(bucket):
-            for kb_canon, aliases in alias_dict.items():
-                if term == kb_canon.lower():
-                    for a in aliases[:_MAX_SYNONYMS]:
-                        t = _clean_term(a)
-                        if t:
-                            bucket.add(t)
-    return {"iv": iv, "oc": oc, "cd": cd, "tiers": tiers}
+    return {"iv": iv, "oc": oc, "cd": cd, "tiers": tiers,
+            "generic_vocab": generic_vocab}

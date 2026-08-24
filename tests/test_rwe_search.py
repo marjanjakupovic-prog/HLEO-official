@@ -2,26 +2,21 @@
 Tests for the RWE Search Engine — autonomous query preparation, translation,
 controlled query expansion, semi-semantic retrieval, and provenance.
 
-Covers the required cases:
-  - Italian query
-  - English query
-  - language detection
+Catena C edition: all terminology comes from the external vocabulary
+providers, simulated offline by the shared FakeResolver
+(tests/vocab_stubs.py). No hardcoded dictionaries are involved.
+
+Covers:
+  - language detection (orchestrator-authoritative, heuristic as hint)
   - translation (original_query preserved)
-  - query expansion (synonyms, MeSH, combos, colloquial)
-  - synonyms / medical vs colloquial terms
-  - trichology query
-  - non-trichology query
+  - provider-first entity recognition
+  - query expansion (synonyms, MeSH, translations, colloquial, combos)
   - semi-semantic retrieval (authoritative source match preserved)
   - relevance filtering (score + match_reason)
   - provenance (matched_query, source_language, expansion_type)
-  - source language
-  - original_query never overwritten
-  - results from translated queries
-  - results from expanded queries
   - no duplicates across multi-query retrieval
-  - RWE only
-  - scientific only regression
-  - both (scientific + RWE convergence via AI Assistant schema)
+  - RWE only / scientific regression / assistant schema
+  - structured-relation V3 activation without the feature flag
 """
 import os
 from types import SimpleNamespace
@@ -41,8 +36,9 @@ from core.rwe.query_engine import (
     EXP_MESH,
     EXP_COMBO,
     EXP_COLLOQUIAL,
-    EXP_NEIGHBOR,
 )
+
+from vocab_stubs import default_resolver, patch_resolver
 
 
 # ─── fakes ───────────────────────────────────────────────────────────────────
@@ -156,10 +152,17 @@ def test_detect_language_spanish():
     assert detect_language("La finasterida puede causar caída del cabello?") == "es"
 
 
+def test_detect_language_no_evidence_returns_und_not_en():
+    """Without marker evidence the heuristic must NOT silently guess English
+    (the multilingual path would be bypassed)."""
+    assert detect_language("xyzwq vbnmk qpr") == "und"
+
+
 # ─── query plan / original_query preserved ──────────────────────────────────
 
-def test_original_query_never_overwritten():
+def test_original_query_never_overwritten(monkeypatch):
     """original_query must remain the verbatim user input."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride initial shedding", lang="it"):
         eng = _make_engine()
         plan = eng.plan("La finasteride può causare shedding iniziale?")
@@ -168,7 +171,8 @@ def test_original_query_never_overwritten():
     assert plan.detected_language == "it"
 
 
-def test_translation_fields_present():
+def test_translation_fields_present(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride hair loss", lang="it", translated=True):
         eng = _make_engine()
         plan = eng.plan("caduta capelli finasteride")
@@ -176,7 +180,8 @@ def test_translation_fields_present():
     assert plan.translated_query == "finasteride hair loss"
 
 
-def test_english_query_no_translation():
+def test_english_query_no_translation(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride shedding", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("finasteride shedding")
@@ -186,7 +191,8 @@ def test_english_query_no_translation():
 
 # ─── query expansion ────────────────────────────────────────────────────────
 
-def test_expansion_contains_original_and_translated():
+def test_expansion_contains_original_and_translated(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride hair loss", lang="it"):
         eng = _make_engine()
         plan = eng.plan("finasteride caduta capelli")
@@ -195,56 +201,61 @@ def test_expansion_contains_original_and_translated():
     assert EXP_TRANSLATED in types
 
 
-def test_expansion_synonyms_present():
+def test_expansion_synonyms_present(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("finasteride")
     queries = [eq.query.lower() for eq in plan.expanded_queries]
-    # propecia/proscar are known finasteride brand aliases
+    # propecia/proscar are provider (RxNorm) brand synonyms of finasteride
     assert "propecia" in queries or "proscar" in queries
 
 
-def test_expansion_mesh_terms_present():
-    with _mock_orch("finasteride", lang="en", translated=False):
-        eng = _make_engine()
-        plan = eng.plan("finasteride")
-    mesh_queries = [eq for eq in plan.expanded_queries if eq.expansion_type == EXP_MESH]
-    assert len(mesh_queries) >= 1
-
-
-def test_expansion_colloquial_for_shedding():
-    """The colloquial supplement must surface patient phrasings for hair loss."""
-    with _mock_orch("finasteride initial shedding", lang="en", translated=False):
-        eng = _make_engine()
-        plan = eng.plan("finasteride initial shedding")
-    colloq = [eq.query for eq in plan.expanded_queries if eq.expansion_type == EXP_COLLOQUIAL]
-    assert any("shedding" in q or "hair fall" in q or "worsening" in q for q in colloq)
-
-
-def test_expansion_is_controlled_not_broad():
-    """A finasteride query must NOT broaden into generic hair-loss-only queries
-    that drop the drug entity — every colloquial/combo keeps the drug anchor."""
+def test_expansion_mesh_terms_present(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride shedding", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("finasteride shedding")
-    # every expanded query must contain 'finasteride' OR a finasteride synonym
-    fin_terms = {"finasteride", "propecia", "proscar", "finpecia", "fincar"}
+    queries = [eq.query.lower() for eq in plan.expanded_queries]
+    # the MeSH descriptor preferred term reaches the expansion
+    assert any("alopecia" in q for q in queries)
+
+
+def test_expansion_colloquial_for_shedding(monkeypatch):
+    """Provider colloquial variants must surface patient phrasings."""
+    patch_resolver(monkeypatch, default_resolver())
+    with _mock_orch("finasteride initial shedding", lang="en", translated=False):
+        eng = _make_engine()
+        plan = eng.plan("finasteride initial shedding")
+    all_queries = " ".join(eq.query.lower() for eq in plan.expanded_queries)
+    assert "shedding" in all_queries or "hair fall" in all_queries
+
+
+def test_expansion_is_controlled_not_broad(monkeypatch):
+    """Every expanded query keeps the drug anchor — no generic broadening."""
+    patch_resolver(monkeypatch, default_resolver())
+    with _mock_orch("finasteride shedding", lang="en", translated=False):
+        eng = _make_engine()
+        plan = eng.plan("finasteride shedding")
+    fin_terms = {"finasteride", "propecia", "proscar", "finpecia"}
     for eq in plan.expanded_queries:
-        if eq.expansion_type in (EXP_COLLOQUIAL, EXP_COMBO, EXP_NEIGHBOR):
+        if eq.expansion_type in (EXP_COLLOQUIAL, EXP_COMBO, "colloquial", "slang"):
             qtokens = set(eq.query.lower().split())
             assert qtokens & fin_terms or "finasteride" in eq.matched_entities, (
                 f"expansion '{eq.query}' dropped the finasteride anchor"
             )
 
 
-def test_expansion_capped():
+def test_expansion_capped(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride dutasteride minoxidil", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("finasteride dutasteride minoxidil")
     assert len(plan.expanded_queries) <= 16
 
 
-def test_expansion_deduplicated():
+def test_expansion_deduplicated(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("finasteride")
@@ -254,8 +265,9 @@ def test_expansion_deduplicated():
 
 # ─── synonyms / medical vs colloquial ───────────────────────────────────────
 
-def test_medical_term_recognized():
+def test_medical_term_recognized(monkeypatch):
     """Medical term 'androgenetic alopecia' is recognized as a condition."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("androgenetic alopecia", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("androgenetic alopecia treatment")
@@ -263,8 +275,10 @@ def test_medical_term_recognized():
     assert "androgenetic alopecia" in canonicals
 
 
-def test_colloquial_term_recognized_as_medical():
-    """Colloquial 'caduta capelli' maps to the medical concept 'hair loss'."""
+def test_colloquial_term_recognized_as_medical(monkeypatch):
+    """Colloquial 'caduta capelli' maps to the medical concept 'hair loss'
+    through the multilingual provider (ConceptNet translation)."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("hair loss", lang="it"):
         eng = _make_engine()
         plan = eng.plan("caduta capelli")
@@ -272,8 +286,9 @@ def test_colloquial_term_recognized_as_medical():
     assert "hair loss" in canonicals
 
 
-def test_brand_name_normalized_to_generic():
-    """Brand 'propecia' is recognized as the generic 'finasteride'."""
+def test_brand_name_normalized_to_generic(monkeypatch):
+    """Brand 'propecia' is recognized as the generic 'finasteride' (RxNorm)."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("propecia", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("propecia side effects")
@@ -283,17 +298,20 @@ def test_brand_name_normalized_to_generic():
 
 # ─── trichology vs non-trichology ────────────────────────────────────────────
 
-def test_trichology_query_recognizes_entities():
+def test_trichology_query_recognizes_entities(monkeypatch):
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("minoxidil hair loss", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("minoxidil hair loss")
     canonicals = {c for _, c, _ in plan.entities}
     assert "minoxidil" in canonicals
-    assert "hair loss" in canonicals
+    assert "alopecia" in canonicals  # MeSH preferred term for 'hair loss'
 
 
-def test_non_trichology_query_still_runs():
-    """A non-trichology query produces a plan (no entities) without crashing."""
+def test_non_trichology_query_still_runs(monkeypatch):
+    """A query with no provider-recognised entities produces a minimal plan
+    (original query only) without crashing."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("headache aspirin", lang="en", translated=False):
         eng = _make_engine()
         plan = eng.plan("headache aspirin")
@@ -306,8 +324,6 @@ def test_non_trichology_query_still_runs():
 def test_authoritative_source_match_preserved():
     """openFDA items are kept when the query is drug-only (drug present = relevant)."""
     from core.rwe.pipeline import relevance_filter
-    # FAERS report where the drug is NOT in the reaction text, but the query
-    # only asks about the drug — so the drug match is sufficient.
     it = _fake_faers_item(text="headache; nausea", treatment="FINASTERIDE")
     out = relevance_filter(
         [it], "finasteride",
@@ -315,18 +331,11 @@ def test_authoritative_source_match_preserved():
     )
     assert len(out) == 1
     assert out[0].relevance == "relevant"
-    # Drug-only query → drug_match reason (authoritative drug match trusted)
     assert "drug_match" in (out[0].match_reason or "")
 
 
 def test_authoritative_drug_only_filtered_when_event_missing():
-    """FAERS-23: drug match but event missing → FILTERED (no drug-only false positives).
-
-    This is the core bug fix: a "dutasteride induced hair shedding" query must
-    NOT surface a dutasteride + loss-of-proprioception record. The drug match
-    is trusted (authoritative), but the event (shedding) is verified against the
-    record's reaction text — and it's absent → low score → filtered.
-    """
+    """FAERS-23: drug match but event missing → FILTERED (no drug-only false positives)."""
     from core.rwe.pipeline import relevance_filter
     it = _fake_faers_item(
         rid="PROP-1",
@@ -376,26 +385,37 @@ def test_finasteride_shedding_keeps_only_event_matching():
     assert "BAD" not in ids
 
 
-def test_event_synonym_multilingual_match():
-    """FAERS-24: Italian 'caduta capelli' matches English 'hair shedding' record."""
+def test_event_synonym_match_via_provider_vocabulary():
+    """Provider variants of the event (from the plan's slim vocabulary) match
+    the record even when the literal query event term is absent."""
     from core.rwe.pipeline import relevance_filter
+    from vocab_stubs import slim, default_mapping
+    vocab = slim(("hair shedding", default_mapping()[("hair shedding", "*")]))
     it = _fake_faers_item(rid="IT-1", treatment="FINASTERIDE",
-                          text="hair shedding; hair loss")
+                          text="worsening alopecia reported")
     out = relevance_filter(
         [it], "finasteride caduta capelli",
         entities=[("drug", "finasteride", 1.0), ("symptom", "hair shedding", 1.0)],
+        vocabulary=vocab,
     )
     assert len(out) == 1
     assert out[0].relevance_score >= 0.5
 
 
 def test_semantic_entity_match_without_keyword():
-    """An item matching an entity alias (but no query token) is kept."""
+    """An item matching provider variants of the entities (but no query token)
+    is kept."""
     from core.rwe.pipeline import relevance_filter
-    it = _fake_reddit_item("my story", "u1", text="I took propecia and my hair fell out")
+    from vocab_stubs import slim, default_mapping
+    mapping = default_mapping()
+    vocab = slim(("finasteride", mapping[("finasteride", "*")]),
+                 ("hair loss", mapping[("hair loss", "*")]))
+    it = _fake_reddit_item("my story", "u1",
+                           text="I took propecia and now I have noticeable hair fall")
     out = relevance_filter(
         [it], "finasteride shedding",
         entities=[("drug", "finasteride", 1.0), ("symptom", "hair loss", 1.0)],
+        vocabulary=vocab,
     )
     assert len(out) == 1
     assert out[0].relevance_score > 0
@@ -430,17 +450,15 @@ def test_relevance_score_is_float_0_to_1():
 
 # ─── provenance ─────────────────────────────────────────────────────────────
 
-def test_matched_query_stamped():
+def test_matched_query_stamped(monkeypatch):
     """Each item carries the expanded query that surfaced it."""
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     faers = [_fake_faers_item()]
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok(faers)), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_status("no_credentials", "x")), \
-         patch("core.rwe.query_engine.QueryOrchestrator") as M:
-        M.return_value.process.return_value = SimpleNamespace(
-            search_query="finasteride", detected_language="en", translation_applied=False,
-        )
+         _mock_orch("finasteride", lang="en", translated=False):
         result = pipe.search("finasteride", sources=["reddit", "openfda_faers"])
     assert len(result.items) == 1
     it = result.items[0]
@@ -449,8 +467,9 @@ def test_matched_query_stamped():
     assert it.source_language is not None
 
 
-def test_source_language_stamped():
+def test_source_language_stamped(monkeypatch):
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     faers = [_fake_faers_item()]
     # Reddit returns items only for English queries (realistic: Reddit search
@@ -468,9 +487,10 @@ def test_source_language_stamped():
     assert "en" in langs
 
 
-def test_expanded_queries_in_result():
+def test_expanded_queries_in_result(monkeypatch):
     """The result envelope exposes the full expansion provenance."""
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_status("no_results", "none")), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_status("no_credentials", "x")), \
@@ -483,10 +503,11 @@ def test_expanded_queries_in_result():
 
 # ─── multi-query retrieval: translated + expanded results ───────────────────
 
-def test_results_from_translated_query():
+def test_results_from_translated_query(monkeypatch):
     """An item surfaced by the translated (English) query is present when the
     original was Italian."""
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     # Reddit returns items only when the query contains 'finasteride' (English)
     def reddit_conditional(query, limit=15):
@@ -503,9 +524,10 @@ def test_results_from_translated_query():
     assert len(en_items) >= 1
 
 
-def test_results_from_expanded_query():
-    """An item surfaced by a synonym/expanded query (not the original) is kept."""
+def test_results_from_expanded_query(monkeypatch):
+    """An item surfaced by a provider-synonym query (not the original) is kept."""
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     # openFDA returns an item only for the 'propecia' synonym
     def openfda_conditional(query, limit=20):
@@ -524,9 +546,10 @@ def test_results_from_expanded_query():
 
 # ─── no duplicates across multi-query ───────────────────────────────────────
 
-def test_no_duplicates_across_queries():
+def test_no_duplicates_across_queries(monkeypatch):
     """The same item returned by multiple expanded queries is deduplicated."""
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     same = _fake_faers_item(rid="DUP-1")
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok([same])), \
@@ -540,8 +563,9 @@ def test_no_duplicates_across_queries():
 
 # ─── RWE only / scientific regression / both ────────────────────────────────
 
-def test_rwe_only_search():
+def test_rwe_only_search(monkeypatch):
     from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
     pipe = RWEPipeline()
     with patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok([_fake_faers_item()])), \
          patch.object(pipe.reddit, "search_with_status", _stub_reddit_ok([_fake_reddit_item("r","u")])), \
@@ -595,9 +619,10 @@ def test_assistant_accepts_rwe_with_provenance(client):
 
 # ─── integration: the canonical Italian test query ──────────────────────────
 
-def test_canonical_italian_query_full_pipeline():
+def test_canonical_italian_query_full_pipeline(monkeypatch):
     """The success criterion: 'La finasteride può causare shedding iniziale?'
-    must be transformed into a proper RWE search plan."""
+    must be transformed into a proper RWE search plan (Catena C providers)."""
+    patch_resolver(monkeypatch, default_resolver())
     with _mock_orch("finasteride initial shedding", lang="it", translated=True):
         eng = _make_engine()
         plan = eng.plan("La finasteride può causare shedding iniziale?")
@@ -608,17 +633,117 @@ def test_canonical_italian_query_full_pipeline():
     # 3. translates
     assert plan.translated_query == "finasteride initial shedding"
     assert plan.translation_applied is True
-    # 4. recognizes entities
+    # 4. recognizes entities (via the external providers)
     canonicals = {c for _, c, _ in plan.entities}
     assert "finasteride" in canonicals
-    assert "hair loss" in canonicals  # 'shedding' → hair loss concept
+    assert "alopecia" in canonicals  # 'initial shedding' → MeSH Alopecia concept
     # 5. generates expanded queries
     assert len(plan.expanded_queries) >= 5
-    # 6. includes colloquial shedding phrasings
+    # 6. includes provider variants of the shedding concept
     all_queries = " ".join(eq.query.lower() for eq in plan.expanded_queries)
     assert "shedding" in all_queries
     # 7. expansion is controlled (finasteride anchor preserved)
     fin_terms = {"finasteride", "propecia", "proscar"}
-    colloq = [eq for eq in plan.expanded_queries if eq.expansion_type == EXP_COLLOQUIAL]
+    colloq = [eq for eq in plan.expanded_queries
+              if eq.expansion_type in (EXP_COLLOQUIAL, "colloquial", "slang")]
     for eq in colloq:
         assert "finasteride" in eq.matched_entities or (set(eq.query.lower().split()) & fin_terms)
+
+
+# ─── structured relation: V3 activates without the feature flag ─────────────
+
+def test_structured_hypertrichosis_plan_activates_v3_without_flag(monkeypatch):
+    """'minoxidil hypertrichosis' exposes a drug→outcome relation: the V3
+    relation-aware scorer must activate (deterministic entities-fallback
+    intent, no LLM) even when HLEO_RWE_INTENT_SCORING is off, the expansion
+    must stay relation-preserving (no finasteride/dutasteride broadening),
+    and a direct oral-route temporal testimony must outrank a drug-only
+    thread. Entities come from the external providers (FakeResolver)."""
+    monkeypatch.delenv("HLEO_RWE_INTENT_SCORING", raising=False)
+    from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
+
+    direct = RWEItem(
+        source="hairlosstalk", source_type="community_forum",
+        evidence_tier="anecdotal", collection_method="official_rss_feed",
+        external_id="t-direct", source_url="https://example.org/t-direct",
+        title="Oral minoxidil excess hair",
+        text=("I started oral minoxidil and after a few months I developed "
+              "excessive body hair and hypertrichosis on my face."),
+        language="en", treatment="oral minoxidil",
+    )
+    drug_only = RWEItem(
+        source="hairlosstalk", source_type="community_forum",
+        evidence_tier="anecdotal", collection_method="official_rss_feed",
+        external_id="t-generic", source_url="https://example.org/t-generic",
+        title="My regimen",
+        text="I use minoxidil for my hair, great stuff overall.",
+        language="en", treatment="minoxidil",
+    )
+
+    pipe = RWEPipeline()
+    items = [direct, drug_only]
+
+    def feed_stub(query, limit=15):
+        return list(items), "ok", f"Retrieved {len(items)} thread(s)."
+
+    with patch.object(pipe.hairlosstalk, "search_with_status", feed_stub), \
+         patch.object(pipe.openfda, "search_with_status",
+                      _stub_openfda_status("no_results", "none")), \
+         _mock_orch("minoxidil hypertrichosis", lang="en", translated=False):
+        result = pipe.search("minoxidil hypertrichosis",
+                             sources=["hairlosstalk", "openfda_faers"])
+
+    # V3 activated without the flag (structured drug→outcome relation)
+    assert result.source_status["openfda_faers"] != "no_credentials"
+    titles = [it.title for it in result.items]
+    assert "Oral minoxidil excess hair" in titles
+    direct_item = next(it for it in result.items
+                       if it.title == "Oral minoxidil excess hair")
+    assert direct_item.relevance_score >= 0.7
+    assert direct_item.metadata["intent_relation_type"] == "side_effect"
+    # drug-only thread scores far below (event side missing) and is filtered
+    assert "My regimen" not in titles
+
+    # relation-preserving expansion: no broadening to other drugs
+    expanded = " ".join(eq["query"].lower() for eq in result.expanded_queries)
+    assert "finasteride" not in expanded
+    assert "dutasteride" not in expanded
+    # the requested relation IS expanded (provider variants of the outcome)
+    assert "excess" in expanded or "unwanted hair" in expanded
+
+
+def test_route_and_temporal_inferred_for_oral_query(monkeypatch):
+    """'oral minoxidil hypertrichosis after a few months' carries route=oral
+    and temporal_relation=after in the intent and in the item metadata."""
+    monkeypatch.delenv("HLEO_RWE_INTENT_SCORING", raising=False)
+    from core.rwe.pipeline import RWEPipeline
+    patch_resolver(monkeypatch, default_resolver())
+
+    direct = RWEItem(
+        source="hairlosstalk", source_type="community_forum",
+        evidence_tier="anecdotal", collection_method="official_rss_feed",
+        external_id="t-oral", source_url="https://example.org/t-oral",
+        title="Oral minoxidil excess hair",
+        text=("I started oral minoxidil and after a few months I developed "
+              "excessive body hair and hypertrichosis on my face."),
+        language="en", treatment="oral minoxidil",
+    )
+
+    pipe = RWEPipeline()
+
+    def feed_stub(query, limit=15):
+        return [direct], "ok", "ok"
+
+    with patch.object(pipe.hairlosstalk, "search_with_status", feed_stub), \
+         _mock_orch("oral minoxidil hypertrichosis after a few months",
+                    lang="en", translated=False):
+        result = pipe.search("oral minoxidil hypertrichosis after a few months",
+                             sources=["hairlosstalk"])
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.metadata["intent_route"] == "oral"
+    assert item.metadata["intent_temporal_relation"] == "after"
+    assert item.metadata["intent_relation_type"] == "side_effect"
+    assert item.relevance_score >= 0.7

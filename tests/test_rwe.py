@@ -92,9 +92,12 @@ def _make_pipeline():
     return RWEPipeline()
 
 
-def test_rwe_search_both_sources_ok():
+def test_rwe_search_both_sources_ok(monkeypatch):
+    from vocab_stubs import default_resolver, patch_resolver
+    patch_resolver(monkeypatch, default_resolver())
     pipe = _make_pipeline()
-    reddit_items = [_fake_reddit_item("My finasteride story", "https://reddit.com/1")]
+    reddit_items = [_fake_reddit_item("My finasteride story", "https://reddit.com/1",
+                                      text="finasteride stopped my hair loss")]
     faers_items = [_fake_faers_item()]
     with patch.object(pipe.reddit, "search_with_status", _stub_reddit_ok(reddit_items)), \
          patch.object(pipe.openfda, "search_with_status", _stub_openfda_ok(faers_items)), \

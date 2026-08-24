@@ -351,8 +351,14 @@ def test_resolver_skips_short_terms():
     assert r.resolve_terms(["ab", ""]) == {}
 
 
-def test_flag_disabled_by_default(monkeypatch):
+def test_flag_enabled_by_default(monkeypatch):
+    """Catena C is provider-first: the vocabulary layer defaults to ON."""
     monkeypatch.delenv(VOCAB_ENABLED_ENV, raising=False)
+    assert vocab_enabled() is True
+
+
+def test_flag_disabled_explicitly(monkeypatch):
+    monkeypatch.setenv(VOCAB_ENABLED_ENV, "0")
     assert vocab_enabled() is False
     assert build_resolver_from_env() is None
 

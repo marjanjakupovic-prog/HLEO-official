@@ -283,17 +283,15 @@ def build_judge_terms(qu: dict, entities: list) -> dict:
         target = norm(canonical)
         bucket = interventions if target in interventions else outcomes
         bucket.update(norm(a) for a in aliases if isinstance(a, str))
-    from core.biomedical_kb import (
-        CONDITION_ALIASES, DRUG_ALIASES, SYMPTOM_ALIASES,
-    )
-    alias_map = {"drug": (DRUG_ALIASES, interventions),
-                 "condition": (CONDITION_ALIASES, conditions),
-                 "symptom": (SYMPTOM_ALIASES, outcomes)}
+    # Entity canonicals from the plan (provider-recognised, Catena C).
+    # Provider variants already reach the judge through the QU synonyms above;
+    # no local alias dictionaries are used anymore.
+    etype_buckets = {"drug": interventions, "active_ingredient": interventions,
+                     "condition": conditions, "disease": conditions,
+                     "symptom": outcomes, "adverse_effect": outcomes}
     for etype, canonical, _conf in entities:
-        c = norm(canonical)
-        aliases_dict, bucket = alias_map.get(etype, ({}, outcomes))
-        bucket.add(c)
-        bucket.update(norm(a) for a in aliases_dict.get(canonical, []))
+        bucket = etype_buckets.get(etype, outcomes)
+        bucket.add(norm(canonical))
     return {"interventions": interventions, "outcomes": outcomes,
             "conditions": conditions}
 

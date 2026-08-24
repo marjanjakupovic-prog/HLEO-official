@@ -92,3 +92,10 @@ class VocabularyResolution(BaseModel):
                 if c not in out or w > out[c]:
                     out[c] = w
         return out
+
+    @classmethod
+    def from_slim(cls, term: str, entries) -> "VocabularyResolution":
+        """Rebuild a resolution from the slim serialisable view (list of
+        match dicts) attached to intents / query plans."""
+        return cls(term=term,
+                   matches=[VocabularyMatch(**e) for e in entries or []])

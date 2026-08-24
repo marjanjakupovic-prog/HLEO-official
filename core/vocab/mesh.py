@@ -114,12 +114,16 @@ class MeSHProvider(VocabularyProvider):
         if isinstance(trees, str):
             trees = [trees]
         trees = [t.rsplit("/", 1)[-1] for t in trees]
+        # MeSH tree C23 = "Pathological Conditions, Signs and Symptoms":
+        # the provider's own tree numbers type the concept — no local mapping.
+        semantic_group = ("symptom" if any(t.startswith("C23") for t in trees)
+                          else "condition")
         return VocabularyMatch(
             provider=self.name,
             concept_id=ui,
             preferred_term=preferred,
             synonyms=synonyms[:15],
-            semantic_group="condition",
+            semantic_group=semantic_group,
             language="en",
             confidence=1.0 if kind == "exact" else 0.9,
             match_kind=kind,

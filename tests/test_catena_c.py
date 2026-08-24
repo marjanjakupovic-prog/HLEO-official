@@ -218,11 +218,15 @@ def test_below_threshold_filtered(monkeypatch):
     def by_query(query, source):
         return [_article("Minoxidil erythema", "minoxidil erythema", source)]
 
-    rs, _ = _search_with_stubs(monkeypatch, by_query, judge_score=0.10)
+    # The 0.20 threshold applies to final_score = judge raw + relation_bonus
+    # (approved relation-aware contract). A clearly irrelevant judge score
+    # (0.05) stays below 0.20 even with this article's relation bonus
+    # (~0.11 → final_score 0.16 < 0.20).
+    rs, _ = _search_with_stubs(monkeypatch, by_query, judge_score=0.05)
     out = rs.search("minoxidil erythema")
     assert out is not None
     total = sum(len(out[k]) for k in ("pubmed", "europepmc", "clinicaltrials"))
-    assert total == 0, "score 0.10 must be filtered by the 0.20 threshold"
+    assert total == 0, "final_score below 0.20 must be filtered by the threshold"
 
 
 # ── 5. No per-source top-N before global ranking ────────────────────────────
@@ -273,6 +277,46 @@ def test_scientific_relation_bonus_prefers_relation_specific_paper(monkeypatch):
     flat = [item for src in ("pubmed", "europepmc", "clinicaltrials") for item in out[src]]
     assert len(flat) >= 2
     assert flat[0].title == "Minoxidil hypertrichosis report"
+
+
+def test_relation_match_boosts_adverse_effect_query(monkeypatch):
+    """For an adverse-effect query the relation bonus must be wired into the
+    final ranking used by search(): the relation-specific paper gets a higher
+    relation_bonus than a generic drug paper and ranks first even when the
+    judge gives both the same raw score."""
+    relation = ClinicalRelation(
+        original_query="minoxidil hypertrichosis",
+        agent={"term": "minoxidil", "normalized": "minoxidil",
+               "role": "drug", "search_terms": ["minoxidil"]},
+        event={"term": "", "normalized": ""},
+        manifestation={"term": "hypertrichosis", "normalized": "hypertrichosis",
+                       "role": "adverse_effect", "search_terms": ["hypertrichosis"]},
+        relation_type="adverse_effect",
+        scientific_query="minoxidil hypertrichosis",
+        relation_phrases=["hypertrichosis appeared"],
+    )
+
+    def by_query(query, source):
+        return [
+            _article("Minoxidil review",
+                     "Minoxidil is widely used; safety and tolerability discussed.",
+                     source, year=2024),
+            _article("Minoxidil hypertrichosis report",
+                     "After minoxidil use, hypertrichosis appeared on the arms.",
+                     source, year=2024),
+        ]
+
+    rs, _ = _search_with_stubs(monkeypatch, by_query, judge_score=0.8)
+    monkeypatch.setattr(RelationalSearch, "_extract_relation", lambda self, q: relation)
+    out = rs.search("minoxidil hypertrichosis")
+    assert out is not None
+    flat = [item for src in ("pubmed", "europepmc", "clinicaltrials") for item in out[src]]
+    assert len(flat) >= 2
+    # relation bonus present in metadata and connected to the final ranking
+    assert "relation_bonus" in (flat[0].metadata or {})
+    assert flat[0].metadata["relation_bonus"] > 0
+    assert flat[0].title == "Minoxidil hypertrichosis report"
+    assert flat[0].metadata["relation_bonus"] > flat[1].metadata["relation_bonus"]
 
 # ── 6. RWE endpoint pagination (30 per page, cached) ────────────────────────
 

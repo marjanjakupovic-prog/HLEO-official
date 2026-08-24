@@ -1,8 +1,10 @@
 """
 Tests for the QU-aware relevance scorer (V3): intent extraction, feature
-flag, KB fallback, symmetric strictness, openFDA rules, backward
+flag, entities fallback, symmetric strictness, openFDA rules, backward
 compatibility, and anti-circularity (V3 must not depend on any benchmark
-judge). No network and no real LLM calls: a fake client is injected.
+judge). No network and no real LLM calls: a fake client and the shared
+FakeResolver (tests/vocab_stubs.py) are injected — the Catena C terminology
+comes from provider responses simulated by the fixtures.
 """
 import json
 
@@ -13,13 +15,22 @@ from core.rwe.intent import (
     RWEQueryIntent,
     build_intent,
     extract_intent_llm,
-    intent_from_kb,
+    intent_from_entities,
     intent_scoring_enabled,
     merged_sides,
 )
 from core.rwe.models import RWEItem
 from core.rwe.pipeline import relevance_filter
 from core.rwe.query_engine import RWEQueryEngine
+
+from vocab_stubs import (
+    FakeResolution,
+    default_resolver,
+    mesh,
+    patch_resolver,
+    rxnorm,
+    slim,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -77,6 +88,13 @@ FIN_SHEDDING_INTENT = RWEQueryIntent(
 )
 
 
+def _slim_for(*terms):
+    """Slim vocabulary for the given canonicals from the standard fixtures."""
+    mapping = {k: v for k, v in __import__("vocab_stubs").default_mapping().items()
+               if k[0] in set(terms)}
+    return slim(*[(k[0], v) for k, v in mapping.items()])
+
+
 # ── Feature flag ─────────────────────────────────────────────────────────────
 
 def test_flag_disabled_by_default(monkeypatch):
@@ -91,16 +109,19 @@ def test_flag_enabled(monkeypatch):
 
 def test_plan_has_no_intent_when_flag_off(monkeypatch):
     monkeypatch.delenv(INTENT_SCORING_ENV, raising=False)
+    monkeypatch.setattr("core.rwe.query_engine.build_resolver_from_env",
+                        lambda: None)
     plan = RWEQueryEngine().plan("finasteride shedding")
     assert plan.intent is None
 
 
-def test_plan_builds_kb_fallback_intent_when_flag_on_without_llm(monkeypatch):
+def test_plan_builds_entities_fallback_intent_when_flag_on_without_llm(monkeypatch):
     monkeypatch.setenv(INTENT_SCORING_ENV, "1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    patch_resolver(monkeypatch, default_resolver())
     plan = RWEQueryEngine().plan("finasteride shedding")
     assert plan.intent is not None
-    assert plan.intent.source == "kb_fallback"
+    assert plan.intent.source == "entities_fallback"
     assert "finasteride" in plan.intent.interventions
 
 
@@ -143,13 +164,13 @@ def test_llm_extraction_empty_sides_returns_none():
     assert extract_intent_llm("something unrelated", client=client) is None
 
 
-def test_build_intent_falls_back_to_kb_on_llm_failure():
+def test_build_intent_falls_back_to_entities_on_llm_failure():
     client = FakeLLMClient("garbage{")
     entities = [("drug", "finasteride", 0.95)]
     intent = build_intent("finasteride shedding", "finasteride shedding",
                           entities, use_llm=True, client=client)
     assert client.calls == 1
-    assert intent.source == "kb_fallback"
+    assert intent.source == "entities_fallback"
     assert intent.interventions == ["finasteride"]
 
 
@@ -159,17 +180,17 @@ def test_relation_type_never_breaks_validation():
     assert RWEQueryIntent(relation_type=None).relation_type is None
 
 
-def test_intent_from_kb_maps_sides():
+def test_intent_from_entities_maps_sides():
     entities = [("drug", "finasteride", 0.9), ("symptom", "hair loss", 0.9),
                 ("condition", "androgenetic alopecia", 0.9)]
-    intent = intent_from_kb(entities)
+    intent = intent_from_entities(entities)
     assert intent.interventions == ["finasteride"]
     assert intent.outcomes == ["hair loss"]
     assert intent.conditions == ["androgenetic alopecia"]
-    assert intent.source == "kb_fallback"
+    assert intent.source == "entities_fallback"
 
 
-def test_merged_sides_unions_qu_and_kb():
+def test_merged_sides_unions_qu_synonyms_and_entities():
     sides = merged_sides(FIN_SHEDDING_INTENT, [("drug", "finasteride", 0.9)])
     assert "finasteride" in sides["iv"] and "propecia" in sides["iv"]
     assert "hair shedding" in sides["oc"] and "hair loss" in sides["oc"]
@@ -177,9 +198,10 @@ def test_merged_sides_unions_qu_and_kb():
 
 # ── V3 scoring behaviour ─────────────────────────────────────────────────────
 
-def test_v3_closes_kb_gap_drops_openfda_unrelated_event():
-    """The KB-gap case: 'shedding' unrecognised by the KB. V1 keeps the
-    unrelated FAERS report (drug-only branch); V3 with QU intent drops it."""
+def test_v3_closes_terminology_gap_drops_openfda_unrelated_event():
+    """The terminology-gap case: 'shedding' unrecognised among the entities.
+    V1 keeps the unrelated FAERS report (drug-only branch); V3 with QU intent
+    drops it."""
     items = [
         _item("openfda_faers", "FAERS report 1 — Diarrhoea; Nausea",
               "Diarrhoea; Nausea", treatment="finasteride"),
@@ -187,7 +209,7 @@ def test_v3_closes_kb_gap_drops_openfda_unrelated_event():
               "I started finasteride and got heavy hair shedding, then it stopped.",
               treatment="finasteride"),
     ]
-    entities = [("drug", "finasteride", 0.95)]  # KB does NOT know "shedding"
+    entities = [("drug", "finasteride", 0.95)]  # no event entity recognised
     v1 = relevance_filter([_item(i.source, i.title, i.text, i.treatment, i.condition)
                            for i in items], "finasteride shedding", entities=entities)
     v3 = relevance_filter([_item(i.source, i.title, i.text, i.treatment, i.condition)
@@ -212,12 +234,17 @@ def test_v3_symmetric_penalty_event_without_anchor_dropped():
 
 
 def test_v3_openfda_drug_trusted_event_still_required():
+    intent = RWEQueryIntent(
+        interventions=["finasteride"], outcomes=["hair shedding"],
+        synonyms={"hair shedding": ["hair loss"]},
+        vocabulary=_slim_for("hair shedding"),
+        source="llm", confidence=1.0)
     report = _item("openfda_faers", "FAERS — Alopecia",
                    "Alopecia reported after product use", treatment="finasteride")
     v3 = relevance_filter([report], "finasteride shedding",
                           entities=[("drug", "finasteride", 0.9)],
-                          intent=FIN_SHEDDING_INTENT)
-    assert len(v3) == 1  # alopecia is in the hair-loss semantic group
+                          intent=intent)
+    assert len(v3) == 1  # alopecia is a provider synonym of the event side
     assert v3[0].match_reason.startswith("v3 anchor+event")
 
 
@@ -235,7 +262,9 @@ def test_v3_drug_only_query_does_not_invent_event():
 
 
 def test_v3_condition_only_query():
-    intent = RWEQueryIntent(conditions=["hair loss"], source="llm", confidence=1.0)
+    intent = RWEQueryIntent(conditions=["hair loss"],
+                            vocabulary=_slim_for("hair loss"),
+                            source="llm", confidence=1.0)
     items = [
         _item("calvizie", "Perdita di capelli", "caduta capelli da mesi"),
         _item("hairlosstalk", "Knee surgery", "recovering from knee surgery"),
@@ -260,10 +289,13 @@ def test_v3_multi_intervention_any_anchor():
 
 def test_v3_generic_side_effects_query():
     """'finasteride side effects' asks about ANY event: an FAERS report
-    satisfies the event side by definition; a community post must mention
-    some known event vocabulary."""
-    intent = RWEQueryIntent(interventions=["finasteride"], outcomes=["side effects"],
-                            source="llm", confidence=1.0)
+    satisfies the event side by definition; a community post must mention a
+    provider-known event of the exposure (open event-set from the Catena C:
+    the generic term's provider variants + the drug's related concepts)."""
+    intent = RWEQueryIntent(
+        interventions=["finasteride"], outcomes=["side effects"],
+        vocabulary=_slim_for("finasteride", "side effects"),
+        source="llm", confidence=1.0)
     entities = [("drug", "finasteride", 0.9)]
     items = [
         _item("openfda_faers", "FAERS — Diarrhoea", "Diarrhoea; Nausea",
@@ -281,12 +313,14 @@ def test_v3_generic_side_effects_query():
     assert "Finasteride dosage" not in kept
 
 
-def test_v3_qu_phrasing_triggers_semantic_group():
-    """QU outcome 'initial shedding' is not a group member, but its head word
-    'shedding' is contained in member 'hair shedding' → group triggered."""
-    intent = RWEQueryIntent(interventions=["finasteride"],
-                            outcomes=["initial shedding"],
-                            source="llm", confidence=1.0)
+def test_v3_qu_phrasing_bridged_by_provider_vocabulary():
+    """QU outcome 'initial shedding' is bridged to patient phrasings through
+    the provider vocabulary attached to the intent (Catena C), not through
+    any local synonym group."""
+    intent = RWEQueryIntent(
+        interventions=["finasteride"], outcomes=["initial shedding"],
+        vocabulary=_slim_for("initial shedding"),
+        source="llm", confidence=1.0)
     items = [
         _item("calvizie", "Finasteride e caduta iniziale",
               "ho iniziato finasteride e ho avuto una caduta dei capelli"),
@@ -322,11 +356,11 @@ def test_v3_equals_v1_when_intent_is_none():
     assert [i.relevance_score for i in a] == [i.relevance_score for i in b]
 
 
-def test_kb_fallback_intent_behaves_like_v1_on_clear_cases():
+def test_entities_fallback_intent_behaves_like_v1_on_clear_cases():
     """On margin-safe cases the deterministic fallback keeps V1's verdicts:
     drug-match kept, unrelated item dropped."""
     entities = [("drug", "finasteride", 0.95)]
-    kb_intent = intent_from_kb(entities)
+    fallback_intent = intent_from_entities(entities)
     items = [
         _item("hairlosstalk", "Finasteride log", "taking finasteride daily"),
         _item("hairlosstalk", "Knee surgery", "recovering from surgery"),
@@ -335,7 +369,7 @@ def test_kb_fallback_intent_behaves_like_v1_on_clear_cases():
                            for i in items], "finasteride", entities=entities)
     v3 = relevance_filter([_item(i.source, i.title, i.text, i.treatment, i.condition)
                            for i in items], "finasteride", entities=entities,
-                          intent=kb_intent)
+                          intent=fallback_intent)
     assert {i.title for i in v1} == {"Finasteride log"}
     assert {i.title for i in v3} == {"Finasteride log"}
 
@@ -351,10 +385,11 @@ def test_v3_provenance_fields_stamped():
     assert v3[0].match_reason and "anchor" in v3[0].match_reason
 
 
-
 def test_v3_testimonial_bonus_prefers_direct_experience():
-    intent = RWEQueryIntent(interventions=["minoxidil"], outcomes=["hypertrichosis"],
-                            source="llm", confidence=1.0)
+    intent = RWEQueryIntent(
+        interventions=["minoxidil"], outcomes=["hypertrichosis"],
+        vocabulary=_slim_for("hypertrichosis"),
+        source="llm", confidence=1.0)
     items = [
         _item("hairlosstalk", "My minoxidil experience",
               "I started minoxidil and after two weeks I got hypertrichosis on my arms.",
@@ -370,6 +405,31 @@ def test_v3_testimonial_bonus_prefers_direct_experience():
         "Minoxidil side effect thread",
     ]
     assert v3[0].relevance_score > v3[1].relevance_score
+
+
+# ── Hypertrichosis: distinct concept in the Catena C ─────────────────────────
+
+def test_hypertrichosis_vocabulary_keeps_distinct_concept():
+    """Hypertrichosis and hirsutism are DIFFERENT concepts for the external
+    providers (distinct MeSH UIs): the Catena C must never merge them — not
+    in the recognised entities and not in the V3 scoring sides."""
+    resolver = default_resolver()
+    rec = __import__("core.vocab.entities", fromlist=["recognize"]).recognize(
+        "hypertrichosis", "en", resolver)
+    canonicals = {c for _, c, _ in rec.entities}
+    assert "hypertrichosis" in canonicals
+    assert "hirsutism" not in canonicals
+
+    intent = RWEQueryIntent(interventions=["minoxidil"], outcomes=["hypertrichosis"],
+                            vocabulary=_slim_for("hypertrichosis"),
+                            source="llm", confidence=1.0)
+    sides = merged_sides(intent, [("drug", "minoxidil", 0.9),
+                                  ("symptom", "hypertrichosis", 0.9)])
+    assert "hypertrichosis" in sides["oc"]
+    assert "hirsutism" not in sides["oc"]
+    assert "hirsutism" not in sides["iv"] | sides["cd"]
+    # provider synonyms of the concept ARE in the side
+    assert "excessive hair growth" in sides["oc"]
 
 
 # ── Anti-circularity: V3 must not depend on any benchmark judge ─────────────
@@ -398,7 +458,3 @@ def test_v3_scoring_does_not_call_llm():
     second = relevance_filter([_item(i.source, i.title, i.text, i.treatment, i.condition)
                                for i in items], "finasteride shedding", **kwargs)
     assert [i.relevance_score for i in first] == [i.relevance_score for i in second]
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))

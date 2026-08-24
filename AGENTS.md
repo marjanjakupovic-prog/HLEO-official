@@ -298,3 +298,136 @@ beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
   (minox→minoxidil canonicalisation, R 0.22→0.97 P=1.0). Vocabulary probe +
   cache stats in `vocab_ab_report.json`. Known unresolved: "dut" (no provider
   maps it, QU doesn't canonicalise), ConceptNet down at benchmark time.
+
+
+## Relation-Preserving Retrieval (2026-08-24) — Query Understanding Layer
+- **Goal**: fix relation loss during expansion/retrieval/ranking (RWE Q2
+  "minoxidil hypertrichosis" was 0/30; Scientific Q2 "minoxidil adverse
+  effects" 8/30). Additive layer — retrieval, dedup, cap 400, pagination 30,
+  min_score 0.20 all unchanged.
+- **KB** (`biomedical_kb.py`): `hypertrichosis` added to SYMPTOM_ALIASES +
+  MESH_MAP. "hirsutism" is DELIBERATELY NOT an alias (distinct clinical
+  concept — explicit veto; guarded by
+  `test_hypertrichosis_vocabulary_keeps_distinct_concept`).
+- **Intent** (`core/rwe/intent.py`): `RWEQueryIntent` gains `route`
+  (oral|topical|unknown) + `temporal_relation` (after|during|before|unknown)
+  with validators; `infer_route()`/`infer_temporal_relation()` = deterministic
+  lexical inference (no LLM); `intent_from_kb(entities, *texts)` sets
+  relation_type="side_effect" when drug+outcome present; `build_intent`
+  backfills route/temporal on both LLM and KB paths.
+- **V3 activation without flag** (`query_engine.py` plan step 7): when
+  `HLEO_RWE_INTENT_SCORING` is off BUT the query has a structured drug→outcome
+  relation (`_has_structured_relation`: drug/active_ingredient +
+  symptom/adverse_effect entities), a KB-fallback intent is built (no LLM
+  call) → V3 scorer activates. Queries without a recognised relation keep
+  intent=None → exact V1 behaviour ("finasteride shedding" unchanged).
+- **Relation-preserving expansion** (`query_engine.py` tier D): in relation
+  mode, drug neighbours that are OTHER DRUGS (finasteride/dutasteride/…)
+  are skipped; only event-side (symptom/condition) neighbours kept.
+  `_TRICHOLOGY_COLLOQUIAL["hypertrichosis"]` added (excess/unwanted/excessive
+  hair phrasings, IT included).
+- **RWE scoring** (`pipeline.py`): `_relation_bonus(body, source_type,
+  relation_type, route, temporal_relation)` — route cue +0.05 (query route
+  confirmed in record text), temporal after-cue +0.05; component maxima
+  0.15+0.10+0.05+0.05=0.35 capped at **0.25** (max exactly 0.25 by
+  construction). relevance_filter stamps `intent_relation_type`,
+  `intent_route`, `intent_temporal_relation` in item.metadata.
+- **Hypertrichosis semantic group** (`pipeline.py` `_EVENT_SYNONYM_GROUPS`):
+  bridges hypertrichosis ↔ body/facial/excess/unwanted hair phrasings so
+  direct testimonies win the event side; without it a generic "hair loss"
+  thread outscored the direct testimony (headword bridging needs >3 chars).
+- **Scientific** (`relational_search.py`): `_relation_bonus` gains
+  relation-specificity (adverse_effect + normalized manifestation in text
+  +0.03; relation_phrases hit +0.02; cap unchanged 0.20). search() ranking
+  now: `final_score = min(1.0, raw_judge + relation_bonus)`;
+  `item.score = final_score*1000 + relation_bonus*50 + clinical_rank*0.5`;
+  metadata gains judge_score_raw/relation_bonus/relation_reasons.
+  NOTE: `final_score` now includes the bonus → the 0.20 threshold applies to
+  raw+bonus (test_below_threshold_filtered aligned to judge 0.05).
+  `_judge_and_rank` is DEAD CODE (no callers) — left untouched.
+- **Tests**: 264 total (260 baseline + 4 new:
+  test_hypertrichosis_vocabulary_keeps_distinct_concept,
+  test_structured_hypertrichosis_plan_activates_v3_without_flag,
+  test_route_and_temporal_inferred_for_oral_query,
+  test_relation_match_boosts_adverse_effect_query). All pass.
+
+
+## Catena C Realignment (2026-08-24) — provider-first terminology, legacy KB removed
+- **core/biomedical_kb.py DELETED** (SYMPTOM_ALIASES, DRUG_ALIASES,
+  CONDITION_ALIASES, MESH_MAP, KNOWLEDGE_GRAPH, lookup_entity, get_neighbors,
+  get_mesh_terms, quick_translate_it). No internal hardcoded terminology
+  remains in production: the Catena C (core/vocab/) is the single
+  terminology layer for BOTH Scientific and RWE.
+- **core/vocab/entities.py (NEW)**: provider-first entity recognition —
+  n-gram candidates (incl. CJK via whitespace tokens) → resolver.resolve_terms
+  → entities (etype from semantic_group, identity match_kinds only; concept/
+  related_concept never mint entities). Returns entities + resolutions (keyed
+  by canonical) + surfaces (for canonicalisation). merge_recognitions()
+  merges EN translation + source-language recognition.
+- **core/vocab/mesh.py**: semantic_group now typed from MeSH tree numbers
+  (C23 = Signs and Symptoms → symptom; else condition) — provider data, no
+  local mapping.
+- **core/vocab/models.py**: VocabularyResolution.from_slim() helper.
+- **core/vocab/resolver.py**: HLEO_VOCAB_ENABLED defaults to ON (opt-out '0';
+  tests/conftest.py forces '0' — suite stays hermetic; tests inject
+  tests/vocab_stubs.py FakeResolver).
+- **core/rwe/query_engine.py (rewritten)**: orchestrator-authoritative
+  language (any language; local heuristic = hint only, returns "und" on
+  zero evidence instead of silently guessing "en"); entities via
+  core.vocab.entities; canonicalise via provider preferred terms; expansion
+  tiers: original/translated/canonical + provider variants (synonym /
+  translation / colloquial / slang / MeSH concept, EXP_MESH kept for mesh
+  concept matches) + entity combos. KB synonym/MeSH/neighbor/colloquial
+  tiers REMOVED (related_concept stays evidence-only, never lexicalized).
+- **core/rwe/intent.py**: intent_from_kb → intent_from_entities (source
+  "entities_fallback"); merged_sides drops KB alias branches, unions
+  provider-recognised entity canonicals + vocabulary scored_terms, and
+  builds "generic_vocab" (generic any-event open set: generic canonical's
+  provider terms + anchor drug's related_concept terms).
+- **core/rwe/pipeline.py**: _EVENT_SYNONYM_GROUPS and _GENERIC_EVENT_VOCAB
+  deleted; _split_entities/_entity_terms accept the plan's slim vocabulary;
+  relevance_filter(..., vocabulary=None); V1 unchanged structurally, V3
+  generic branch uses sides["generic_vocab"]. Scoring formulas, thresholds
+  (0.20), caps (400/30/16), dedup, judge, ranking UNCHANGED.
+- **Deleted orphan modules**: core/semantic_search.py (Fase 1/2 engine,
+  zero consumers), core/search_engine.py (broken relative imports),
+  tests/test_search_engine.py (broken snippet, never collected).
+- **benchmarks/**: qu_ab_benchmark.py + relevance_scorer_v2.py migrated off
+  biomedical_kb (entity canonicals + plan slim vocabulary).
+- **tests/vocab_stubs.py (NEW)**: shared FakeResolver/FakeMatch/FakeResolution
+  + default_mapping() fixture concepts + patch_resolver() (patches BOTH
+  core.vocab.resolver and core.rwe.query_engine build targets) + slim().
+- **tests/test_catena_c_e2e.py (NEW, 8 tests)**: end-to-end proof of the 10
+  Catena C points incl. multilingual pt/ja/nl (outside the old heuristic set)
+  with sabotaged heuristic to prove no silent fallback, shared resolver
+  RWE+Scientific, scoring/judge/ranking contracts, no-KB import guard.
+- Full suite: 274 passed.
+
+
+## ConceptNet Web Fallback (2026-08-24) — WebConceptNetProvider
+- **Diagnosi 502**: outage lato ConceptNet (api.conceptnet.io down, sito up),
+  confermato con curl/browser/UA multipli + thread pubblico conceptnet-users.
+  NON un problema del nostro client né dell'ambiente.
+- **core/vocab/conceptnet_web.py (NEW)**: fallback del provider API. Interroga
+  conceptnet.io (node pages /c/{lang}/{term}), segue redirect, estrae
+  canonical term + lingua + sinonimi/RelatedTo/FormOf (parser HTMLParser
+  stdlib su <h1 class=term>, <h2>rel=/r/…</h2>, <li class="term lang-XX">).
+  Stesso contratto VocabularyMatch dell'API provider; metadata["via"]="web"
+  per provenance. Gestisce CJK, termini non canonici (search redirect), e
+  distingue not_found (nodo inesistente → []) da provider_unavailable (web
+  down → None → base contract [] senza mai sollevare).
+- **core/vocab/conceptnet.py**: API resta il canale PRIMARIO; il web fallback
+  si attiva SOLO su 502/503/504/timeout/ConnectionError (mai su 4xx, mai
+  quando l'API è sana). Nessuna modifica a resolver/scoring/judge/ranking/
+  pipeline; nessun DB o vocabolario hardcoded (solo la VocabCache TTL
+  condivisa del base provider).
+- **tests/fixtures/conceptnet/**: 6 HTML fixture reali (minoxidil,
+  hypertrichosis, propecia, caduta_dei_capelli, minokishijiru_ja,
+  nonexistent). **tests/test_conceptnet_web.py**: 16 test offline (parsing,
+  attivazione fallback su 502/503/504/timeout/conn-error, NO fallback su
+  4xx/API sana, contratto output, not_found vs unavailable, CJK).
+- **Verifica live con API down (502 reale)**: minoxidil→11 match via=web
+  (traduzioni ja/fi/zh + related baldness/hypertension), hypertrichosis→13
+  (ipertricosi, werewolf syndrome, body hair), caduta dei capelli→haarausfall,
+  ミノキシジル→minoxidil, nodo inesistente→[] (niente inventato).
+- Full suite: 290 passed.
