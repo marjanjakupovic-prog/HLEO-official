@@ -139,8 +139,9 @@ def test_unavailable_provider_is_skipped():
     assert p.search("ferritin") == []        # silent skip
 
 
-def test_umls_stub_inactive(monkeypatch):
+def test_umls_inactive_without_key(monkeypatch):
     from core.vocab.umls import UMLSProvider
+    monkeypatch.delenv("UMLS_API_KEY", raising=False)
     monkeypatch.delenv("HLEO_UMLS_API_KEY", raising=False)
     p = UMLSProvider()
     assert p.available() is False

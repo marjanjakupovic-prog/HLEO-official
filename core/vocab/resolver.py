@@ -5,8 +5,10 @@ Design rules:
 - DISABLED BY DEFAULT: without HLEO_VOCAB_ENABLED the resolver is None and
   the pipeline behaves exactly as before (pure V1/V3).
 - Provider selection via HLEO_VOCAB_PROVIDERS (comma list). Default:
-  "rxnorm,mesh,conceptnet,wikidata". LOINC only when its credentials exist.
-  UMLS / SNOMED CT are registered but inactive until licensed.
+  "rxnorm,mesh,conceptnet,wikidata,umls". LOINC only when its credentials
+  exist. UMLS activates only when UMLS_API_KEY is set (available() False
+  otherwise — silently skipped). SNOMED CT is registered but inactive until
+  licensed.
 - A provider that errors, times out or is unavailable never breaks the
   resolution: it is recorded in providers_failed and the others proceed.
 - The resolver merges matches per term but never fuses concepts across
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 VOCAB_ENABLED_ENV = "HLEO_VOCAB_ENABLED"
 VOCAB_PROVIDERS_ENV = "HLEO_VOCAB_PROVIDERS"
-DEFAULT_PROVIDERS = "rxnorm,mesh,conceptnet,wikidata"
+DEFAULT_PROVIDERS = "rxnorm,mesh,conceptnet,wikidata,umls"
 
 
 def vocab_enabled() -> bool:
