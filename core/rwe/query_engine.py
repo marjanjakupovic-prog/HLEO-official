@@ -560,6 +560,9 @@ class RWEQueryEngine:
                     if len(term) < 3 or term.lower() == source_entity.lower():
                         continue
                     base = canonical_query or translated or original
+                    # Filter out noisy provider variants (combo products, unrelated MeSH terms, etc.)
+                    if not self._vocab_variant_allowed(source_entity, term, _etype, base, match.provider):
+                        continue
                     expanded_query = self._replace_entity(base, source_entity, term)
                     if expanded_query == base:
                         expanded_query = " ".join(
@@ -590,8 +593,10 @@ class RWEQueryEngine:
                             source_language="en",
                             matched_entities=[c1, c2],
                         ))
-
         return self._dedup_and_cap(queries, canonical_names)
+
+
+
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -633,3 +638,55 @@ class RWEQueryEngine:
 
         unique.sort(key=_score)
         return unique[:MAX_EXPANDED_QUERIES] if len(unique) > MAX_EXPANDED_QUERIES else unique
+
+    @staticmethod
+    def _vocab_variant_allowed(source_entity: str, candidate: str, etype: str, base_query: str, provider: str) -> bool:
+        """Minimal rule-based filter to block noisy provider variants.
+
+        Rules (conservative):
+        - reject combined product names (contain '/', '+', '&')
+        - require the source_entity token to appear in the candidate
+        - strip dosage/form tokens and numeric tokens; require the anchor token
+          to cover at least 50% of the remaining tokens
+        - if the query expresses causality/adverse cues and the entity is a
+          condition/symptom, require the candidate to contain an adverse/event token
+        """
+        import re
+        if not candidate:
+            return False
+        # Reject obvious multi-ingredient/product combos
+        if any(ch in candidate for ch in ("/", "+", "&")):
+            return False
+        # Normalize
+        s = re.sub(r"[^\w\s']", " ", candidate.lower())
+        toks = [re.sub(r"'s$", "", t) for t in s.split() if t]
+        if not toks:
+            return False
+        anchor = (source_entity or "").lower().strip()
+        if not anchor:
+            return False
+        # Anchor must appear in tokens
+        if anchor not in toks:
+            return False
+        # Remove dosage/form tokens and pure numeric tokens
+        DOSAGE_TOKENS = {
+            "mg", "mcg", "g", "ml", "tablet", "tablets", "capsule",
+            "capsules", "oral", "topical", "cream", "lotion", "ointment",
+            "patch", "solution", "tablet", "tab",
+        }
+        toks_clean = [t for t in toks if (not t.isdigit() and t not in DOSAGE_TOKENS)]
+        if not toks_clean:
+            return False
+        overlap = sum(1 for t in toks_clean if t == anchor)
+        if overlap / max(1, len(toks_clean)) < 0.5:
+            return False
+        # If query looks causal/adverse and entity is condition/symptom, require event terms
+        q = (base_query or "").lower()
+        adverse_cues = {"loss", "shedding", "alopecia", "effluvium", "fall", "fallout", "caduta", "peggioramento", "worse", "side", "effect", "effects", "effetto", "effetti"}
+        causal_markers = ("cause", "causa", "causes", "after", "sospetto", "side effect", "effetto", "dopo")
+        if etype in ("condition", "symptom") and any(m in q for m in causal_markers):
+            joined = " ".join(toks_clean)
+            if not any(ev in joined for ev in adverse_cues):
+                return False
+        return True
+
