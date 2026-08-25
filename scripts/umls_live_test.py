@@ -20,7 +20,7 @@ os.chdir(REPO)
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("HLEO_RWE_INTENT_SCORING", "1")
 
-QUERY = "perdita di capelli dopo finasteride, esperienze dei pazienti"
+QUERY = os.getenv("HLEO_LIVE_QUERY") or "perdita di capelli dopo finasteride, esperienze dei pazienti"
 
 from core.database import engine  # noqa: E402
 from core.models import Base  # noqa: E402

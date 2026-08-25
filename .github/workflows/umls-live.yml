@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      query:
+        description: "Override live query for the UMLS test"
+        required: false
+        default: "perdita di capelli dopo finasteride, esperienze dei pazienti"
 
 permissions:
   contents: read
@@ -39,6 +44,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           HLEO_LLM_MODEL: ${{ vars.HLEO_LLM_MODEL }}
+          HLEO_LIVE_QUERY: ${{ github.event.inputs.query }}
           DATABASE_URL: sqlite://
           HLEO_RWE_INTENT_SCORING: "1"
         run: |
