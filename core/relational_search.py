@@ -37,7 +37,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -221,13 +220,11 @@ class RelationalSearch:
 
     def __init__(self) -> None:
         self._client = None
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if api_key:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(api_key=api_key)
-            except Exception as exc:
-                logger.warning("RelationalSearch: OpenAI init failed — %s", exc)
+        try:
+            from core.llm_provider import build_provider
+            self._client = build_provider()
+        except Exception as exc:
+            logger.warning("RelationalSearch: LLM provider init failed — %s", exc)
         self.pubmed = PubMedCollector()
         self.europepmc = EuropePMCCollector()
         self.clinicaltrials = ClinicalTrialsCollector()

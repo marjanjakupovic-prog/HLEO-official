@@ -5,7 +5,6 @@ ExtractedClinicalProfile schema.
 """
 import json
 import logging
-import os
 
 from dotenv import load_dotenv
 
@@ -17,13 +16,10 @@ class ArticleExtractor:
     MODEL = "gpt-4o"
 
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
-        else:
-            self.client = None
-            logger.warning("OPENAI_API_KEY not set — ArticleExtractor disabled.")
+        from core.llm_provider import build_provider
+        self.client = build_provider()
+        if self.client is None:
+            logger.warning("No LLM provider configured — ArticleExtractor disabled.")
 
     def extract(self, title: str, abstract: str, source: str) -> dict:
         """

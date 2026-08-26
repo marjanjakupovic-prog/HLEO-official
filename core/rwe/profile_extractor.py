@@ -11,7 +11,6 @@ The RWE profile is distinct from the scientific ClinicalProfile:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -50,13 +49,11 @@ class RWEProfileExtractor:
 
     def __init__(self):
         self._client = None
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if api_key:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(api_key=api_key)
-            except Exception as exc:
-                logger.warning("RWEProfileExtractor: OpenAI init failed — %s", exc)
+        try:
+            from core.llm_provider import build_provider
+            self._client = build_provider()
+        except Exception as exc:
+            logger.warning("RWEProfileExtractor: LLM provider init failed — %s", exc)
 
     def extract(self, *, title: str, text: str, source: str,
                 source_type: str = "", treatment: str = "",

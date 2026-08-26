@@ -2,13 +2,22 @@
 HLEO — LLM call guard (cost protection + bounded retry)
 ========================================================
 
-Centralises EVERY OpenAI call so retry cannot multiply across layers.
+Centralises EVERY LLM call so retry cannot multiply across layers.
 
 Hard rules (enforced everywhere this module is used):
     MAX_TOTAL_ATTEMPTS = 5
         1 initial attempt + at most 4 retries = 5 LLM calls per operation.
         No caller/layer may add its own retry on top — doing so would breach
         the absolute cap. The guard is the ONLY retry boundary.
+
+Provider routing (core.llm_provider):
+    ``client`` may be a raw OpenAI-compatible SDK client (unchanged legacy
+    behaviour) or an ``LLMProvider``. A provider carries a resolved model
+    mapping and an optional ONE-WAY fallback (perplexity → openai). When the
+    primary provider fails definitively (LLMCallError after the cap, or
+    QuotaExhaustedError), the SAME bounded policy is applied once to the
+    fallback — the chain is linear and never cycles back, so no
+    Perplexity ↔ OpenAI loop and no duplicated retry is possible.
 
 429 handling (per the master spec):
     - insufficient_quota / credit_balance_exhausted  → NO retry, raise
@@ -107,30 +116,50 @@ def _extract_openai_message(exc: Exception) -> str:
     return str(exc)
 
 
+# ── Provider chain resolution ────────────────────────────────────────────────
+
+def _provider_chain(client: Any, model: str) -> list:
+    """Normalise ``client`` into an ordered (raw_client, model, label) chain.
+
+    A raw OpenAI-compatible SDK client yields a single entry (unchanged
+    legacy behaviour). An ``LLMProvider`` yields the primary plus its
+    optional one-way fallback (perplexity → openai). The chain is linear
+    and never cycles back to the primary.
+    """
+    from core.llm_provider import LLMProvider, resolve_model
+    if isinstance(client, LLMProvider):
+        chain = [(client.client, resolve_model(client.name, model), client.name)]
+        if client.fallback is not None:
+            fb = client.fallback
+            chain.append((fb.client, resolve_model(fb.name, model), fb.name))
+        return chain
+    return [(client, model, "sdk")]
+
+
+def _json_format_for(label: str) -> Optional[dict]:
+    # Perplexity Sonar rejects OpenAI-style {"type": "json_object"}; every
+    # JSON prompt in HLEO already instructs "return ONLY valid JSON" and the
+    # fence-stripping + parse-retry logic below handles the rest.
+    if label == "perplexity":
+        return None
+    return {"type": "json_object"}
+
+
 # ── Centralised LLM call ────────────────────────────────────────────────────
 
-def call_llm(
+def _call_llm_bounded(
     client: Any,
     *,
     messages: list[dict],
-    model: str = "gpt-4o",
-    temperature: float = 0.0,
-    max_tokens: Optional[int] = None,
-    response_format: Optional[dict] = None,
-    json_mode: bool = False,
-    operation: str = "llm_call",
+    model: str,
+    temperature: float,
+    max_tokens: Optional[int],
+    response_format: Optional[dict],
+    operation: str,
 ) -> str:
-    """Call OpenAI chat.completions.create with a SINGLE, bounded retry policy.
-
-    Returns the assistant message text. Raises QuotaExhaustedError (no retry)
-    or LLMCallError (after MAX_TOTAL_ATTEMPTS) on failure.
-
-    Callers MUST NOT add their own retry loop around this — that would breach
-    the absolute cap. This is the only retry boundary in the whole project.
-    """
-    if json_mode and response_format is None:
-        response_format = {"type": "json_object"}
-
+    """Single bounded retry loop against ONE endpoint (the only retry policy
+    in the project). Raises QuotaExhaustedError (no retry) or LLMCallError
+    (after MAX_TOTAL_ATTEMPTS)."""
     last_exc: Optional[Exception] = None
     last_kind: str = "other"
 
@@ -161,11 +190,11 @@ def call_llm(
             # Hard stop: account quota exhausted. No retry, ever.
             if kind == "quota_exhausted":
                 logger.error(
-                    "%s: OpenAI quota exhausted — not retrying. %s",
+                    "%s: LLM quota exhausted — not retrying. %s",
                     operation, msg,
                 )
                 raise QuotaExhaustedError(
-                    f"OpenAI credit/quota exhausted — API calls disabled. ({msg})"
+                    f"LLM credit/quota exhausted — API calls disabled. ({msg})"
                 ) from exc
 
             last_kind = kind
@@ -187,26 +216,72 @@ def call_llm(
     ) from last_exc
 
 
-def call_llm_json(
+def call_llm(
     client: Any,
     *,
     messages: list[dict],
     model: str = "gpt-4o",
     temperature: float = 0.0,
     max_tokens: Optional[int] = None,
-    operation: str = "llm_json_call",
-) -> dict:
-    """Call OpenAI, parse JSON, with the same single bounded retry policy.
+    response_format: Optional[dict] = None,
+    json_mode: bool = False,
+    operation: str = "llm_call",
+) -> str:
+    """Call chat.completions.create with a SINGLE, bounded retry policy.
 
-    JSON / schema validation failures ARE retryable (count toward the cap).
-    On the final attempt the raw text is attached to the error so the caller
-    can surface it.
+    ``client`` is either a raw OpenAI-compatible SDK client or an
+    ``LLMProvider`` (core.llm_provider). With a provider, the requested
+    OpenAI-style model label is mapped to the provider's model and a
+    definitive primary failure falls back ONCE to the provider's fallback
+    (perplexity → openai), reusing the same bounded policy — never a loop.
+
+    Returns the assistant message text. Raises QuotaExhaustedError (no retry)
+    or LLMCallError (after MAX_TOTAL_ATTEMPTS) on failure.
+
+    Callers MUST NOT add their own retry loop around this — that would breach
+    the absolute cap. This is the only retry boundary in the whole project.
     """
-    if max_tokens is not None:
-        kwargs_max = max_tokens
-    else:
-        kwargs_max = None
+    if json_mode and response_format is None:
+        response_format = {"type": "json_object"}
 
+    chain = _provider_chain(client, model)
+    for i, (raw_client, resolved_model, label) in enumerate(chain):
+        rf = response_format
+        if rf == {"type": "json_object"}:
+            rf = _json_format_for(label)
+        op = operation if i == 0 else f"{operation}[fallback:{label}]"
+        try:
+            return _call_llm_bounded(
+                raw_client,
+                messages=messages,
+                model=resolved_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=rf,
+                operation=op,
+            )
+        except (LLMCallError, QuotaExhaustedError):
+            if i + 1 >= len(chain):
+                raise
+            logger.warning(
+                "%s: provider '%s' failed definitively — falling back to '%s'.",
+                operation, label, chain[i + 1][2],
+            )
+    raise LLMCallError(f"{operation}: empty provider chain")  # unreachable
+
+
+def _call_llm_json_bounded(
+    client: Any,
+    *,
+    messages: list[dict],
+    model: str,
+    temperature: float,
+    max_tokens: Optional[int],
+    response_format: Optional[dict],
+    operation: str,
+) -> dict:
+    """Single bounded JSON retry loop against ONE endpoint (same policy as
+    _call_llm_bounded, plus JSON parse/fence-strip handling)."""
     last_exc: Optional[Exception] = None
     last_raw: str = ""
     last_kind: str = "other"
@@ -217,10 +292,11 @@ def call_llm_json(
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
-                "response_format": {"type": "json_object"},
             }
-            if kwargs_max is not None:
-                kwargs["max_tokens"] = kwargs_max
+            if response_format is not None:
+                kwargs["response_format"] = response_format
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
 
             resp = client.chat.completions.create(**kwargs)
             raw = resp.choices[0].message.content or ""
@@ -260,11 +336,11 @@ def call_llm_json(
 
             if kind == "quota_exhausted":
                 logger.error(
-                    "%s: OpenAI quota exhausted — not retrying. %s",
+                    "%s: LLM quota exhausted — not retrying. %s",
                     operation, msg,
                 )
                 raise QuotaExhaustedError(
-                    f"OpenAI credit/quota exhausted — API calls disabled. ({msg})"
+                    f"LLM credit/quota exhausted — API calls disabled. ({msg})"
                 ) from exc
 
             last_kind = kind
@@ -283,3 +359,46 @@ def call_llm_json(
         f"{operation} failed after {MAX_TOTAL_ATTEMPTS} attempts "
         f"(last kind={last_kind}): {last_exc}"
     ) from last_exc
+
+
+def call_llm_json(
+    client: Any,
+    *,
+    messages: list[dict],
+    model: str = "gpt-4o",
+    temperature: float = 0.0,
+    max_tokens: Optional[int] = None,
+    operation: str = "llm_json_call",
+) -> dict:
+    """Call the LLM, parse JSON, with the same single bounded retry policy.
+
+    ``client`` is either a raw OpenAI-compatible SDK client or an
+    ``LLMProvider`` (core.llm_provider) — see call_llm for the routing and
+    one-way fallback semantics. JSON parsing/validation is the existing
+    fence-strip + json.loads logic, reused unchanged for every provider.
+
+    JSON / schema validation failures ARE retryable (count toward the cap).
+    On the final attempt the raw text is attached to the error so the caller
+    can surface it.
+    """
+    chain = _provider_chain(client, model)
+    for i, (raw_client, resolved_model, label) in enumerate(chain):
+        op = operation if i == 0 else f"{operation}[fallback:{label}]"
+        try:
+            return _call_llm_json_bounded(
+                raw_client,
+                messages=messages,
+                model=resolved_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=_json_format_for(label),
+                operation=op,
+            )
+        except (LLMCallError, QuotaExhaustedError):
+            if i + 1 >= len(chain):
+                raise
+            logger.warning(
+                "%s: provider '%s' failed definitively — falling back to '%s'.",
+                operation, label, chain[i + 1][2],
+            )
+    raise LLMCallError(f"{operation}: empty provider chain")  # unreachable

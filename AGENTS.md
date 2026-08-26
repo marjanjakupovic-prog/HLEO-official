@@ -503,3 +503,42 @@ beautifulsoup4 4.15.0, praw 8.0.3, ddgs 9.14.4, httpx2 2.10.0.
   test_rwe_precision.py. Suite: 326 passed. 2 legacy test stubs updated
   ("stopped my shedding" → "stopped my hair shedding") because the
   now-active gate requires a provider-recognised manifestation phrase.
+
+
+## Multi-Provider LLM Layer (2026-08-26) — Perplexity integration
+- **core/llm_provider.py (NEW)**: env-driven provider factory.
+  `HLEO_LLM_PROVIDER` = auto|openai|perplexity|local (default auto:
+  perplexity if PERPLEXITY_API_KEY set → openai → local OPENAI_BASE_URL).
+  `LLMProvider` dataclass (name/client/fallback). Perplexity = official
+  OpenAI-compatible Sonar API (base_url https://api.perplexity.ai, key ONLY
+  from PERPLEXITY_API_KEY). Models: gpt-4o-class → `sonar-pro`
+  (HLEO_PERPLEXITY_MODEL), gpt-4o-mini-class → `sonar`
+  (HLEO_PERPLEXITY_MODEL_MINI). Local: OPENAI_BASE_URL + HLEO_LLM_MODEL.
+- **core/llm_guard.py**: call_llm/call_llm_json accept either a raw SDK
+  client (unchanged legacy path) or an LLMProvider. Bounded retry loop
+  refactored into _call_llm_bounded/_call_llm_json_bounded — still the ONLY
+  retry boundary (MAX_TOTAL_ATTEMPTS=5). Fallback is LINEAR one-way
+  (perplexity → openai, applied once after definitive primary failure);
+  no provider falls back TO Perplexity → Perplexity↔OpenAI loop impossible.
+  GOTCHA: Perplexity Sonar rejects OpenAI-style response_format
+  {"type":"json_object"} → guard drops it for label=="perplexity"; the
+  existing fence-strip + json.loads parsing is reused unchanged (all JSON
+  prompts already demand bare JSON).
+- **Call sites routed via build_provider()**: orchestrator, extractor,
+  article_extractor, patient_extractor, relational_search,
+  rwe/profile_extractor, rwe/translation, rwe/intent (single call per
+  endpoint, its existing no-retry policy), api/main.py (assistant chat,
+  /synthesis, /synthesis/card, /assistant/compare, /translate, RWE profile
+  endpoints; /health gains llm_provider/llm_fallback fields). Endpoint error
+  strings mentioning OPENAI_API_KEY kept verbatim (tests assert them).
+- **tests/conftest.py**: pops PERPLEXITY_API_KEY/perplexity_api_key/
+  HLEO_LLM_PROVIDER too (auto would otherwise resolve to Perplexity when a
+  key is present in the environment).
+- **tests/test_llm_provider.py (NEW, 29 tests)**: selection, model mapping,
+  routing, JSON reuse, json_object drop, fallback (quota/exhaustion/json),
+  no-loop, OpenAI/local/raw-client backward compat, key hygiene.
+- Suite: 371 total — 365 passed; 6 PRE-EXISTING failures unrelated to this
+  layer (test_rwe_search expansion ×3, test_catena_c_e2e multilingual ×3;
+  fail identically on the pre-change tree in this environment).
+- NOTE: .env is tracked in git (pre-existing, holds a real OPENAI_API_KEY) —
+  flagged, not touched.

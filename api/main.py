@@ -281,11 +281,16 @@ async def dashboard(request: Request):
 def health_check():
     import os
     key = os.getenv("OPENAI_API_KEY", "")
+    from core.llm_provider import build_provider, configured_provider_name
+    provider = build_provider()
     return {
         "status": "ok",
         "version": "1.0.0",
         "openai_key_set": bool(key),
         "openai_key_prefix": key[:8] + "…" if key else None,
+        "llm_provider": provider.name if provider else None,
+        "llm_provider_configured": configured_provider_name(),
+        "llm_fallback": provider.fallback.name if (provider and provider.fallback) else None,
     }
 
 
@@ -1056,8 +1061,8 @@ def rwe_extract_profile(body: RWEExtractRequest, db: Session = Depends(get_db)):
     """
     import os, hashlib
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import llm_available
+    if not llm_available():
         return {"error": "OPENAI_API_KEY not set."}
 
     from core.rwe.profile_extractor import RWEProfileExtractor
@@ -1157,8 +1162,8 @@ def rwe_extract_batch(body: RWEBatchExtractRequest, db: Session = Depends(get_db
             "message": "Non sono disponibili record RWE da estrarre.",
         }
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import llm_available
+    if not llm_available():
         return {
             "query": body.query,
             "rwe_records_found": found,
@@ -1523,12 +1528,10 @@ def assistant_chat(
     """
     import os, json as _json
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import build_provider
+    client = build_provider()
+    if client is None:
         return {"error": "OPENAI_API_KEY not set."}
-
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key)
 
     # ── Session management ──────────────────────────────────────────
     import json as _json
@@ -2195,15 +2198,13 @@ def synthesize(body: SynthesisRequest):
     """
     import os, json as _json
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import build_provider
+    client = build_provider()
+    if client is None:
         raise HTTPException(status_code=503, detail="Scientific synthesis requires OPENAI_API_KEY.")
 
     if not body.articles:
         return {"error": "No relevant articles provided for synthesis."}
-
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key)
 
     # Format articles as a numbered block with identifiers for citation.
     art_lines = []
@@ -2306,8 +2307,8 @@ def synthesize_card(body: CardSynthesisRequest):
     """
     import os
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import llm_available
+    if not llm_available():
         raise HTTPException(status_code=503,
                             detail="Card synthesis requires OPENAI_API_KEY.")
 
@@ -2361,9 +2362,9 @@ def synthesize_card(body: CardSynthesisRequest):
         f"{_lang_note}"
     )
 
-    from openai import OpenAI
+    from core.llm_provider import build_provider
     from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
-    client = OpenAI(api_key=api_key)
+    client = build_provider()
     try:
         parsed = call_llm_json(
             client,
@@ -2417,16 +2418,15 @@ def assistant_compare(body: CompareRequest, db: Session = Depends(get_db)):
     """
     import os
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import build_provider
+    client = build_provider()
+    if client is None:
         return {"error": "OPENAI_API_KEY not set."}
 
     if not (body.scientific_articles or body.rwe_evidence or getattr(body, 'clinical_profile_episode_ids', None) or getattr(body, 'rwe_profile_episode_ids', None)):
         return {"error": "No evidence provided for comparison."}
 
-    from openai import OpenAI
     from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
-    client = OpenAI(api_key=api_key)
 
     # Build SCIENTIFIC and RWE blocks from the provided live search_context in the request.
     # Under the new architecture we DO NOT fetch profiles from the DB; the frontend
@@ -2599,8 +2599,9 @@ async def translate_text(body: TranslateRequest):
     """
     import os, json as _json, hashlib
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    from core.llm_provider import build_provider
+    client = build_provider()
+    if client is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured.")
 
@@ -2629,9 +2630,7 @@ async def translate_text(body: TranslateRequest):
         '{"translation": "...", "summary": "..."}'
     )
 
-    from openai import OpenAI
     from core.llm_guard import call_llm_json, LLMCallError, QuotaExhaustedError
-    client = OpenAI(api_key=api_key)
     try:
         result = call_llm_json(
             client,

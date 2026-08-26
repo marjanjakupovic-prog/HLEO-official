@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -71,14 +70,16 @@ class QueryOrchestrator:
 
     def __init__(self) -> None:
         self._client = None
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if api_key:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(api_key=api_key)
-                logger.debug("QueryOrchestrator: OpenAI client initialised.")
-            except Exception as exc:
-                logger.warning(f"QueryOrchestrator: cannot init OpenAI client — {exc}")
+        try:
+            from core.llm_provider import build_provider
+            self._client = build_provider()
+            if self._client is not None:
+                logger.debug(
+                    "QueryOrchestrator: LLM client initialised (%s).",
+                    self._client.name,
+                )
+        except Exception as exc:
+            logger.warning(f"QueryOrchestrator: cannot init LLM client — {exc}")
 
     # ── Public API ────────────────────────────────────────────────────────────
 

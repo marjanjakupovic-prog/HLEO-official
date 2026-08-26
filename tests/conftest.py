@@ -86,10 +86,19 @@ def _create_tables():
 
 @pytest.fixture(autouse=True)
 def _no_openai_key():
-    """Ensure no real LLM key leaks into any test (load_dotenv is neutralized)."""
-    os.environ.pop("OPENAI_API_KEY", None)
+    """Ensure no real LLM key leaks into any test (load_dotenv is neutralized).
+
+    PERPLEXITY_API_KEY is popped too: with the multi-provider layer
+    (core.llm_provider) a Perplexity key in the environment would otherwise
+    make "auto" resolve to Perplexity and break hermeticity.
+    """
+    for var in ("OPENAI_API_KEY", "PERPLEXITY_API_KEY", "perplexity_api_key",
+                "HLEO_LLM_PROVIDER"):
+        os.environ.pop(var, None)
     yield
-    os.environ.pop("OPENAI_API_KEY", None)
+    for var in ("OPENAI_API_KEY", "PERPLEXITY_API_KEY", "perplexity_api_key",
+                "HLEO_LLM_PROVIDER"):
+        os.environ.pop(var, None)
 
 
 @pytest.fixture(autouse=True)

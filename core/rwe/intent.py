@@ -209,46 +209,66 @@ def extract_intent_llm(
     """
     if not (translated_query or original_query):
         return None
-    try:
-        if client is None:
-            if not os.getenv("OPENAI_API_KEY"):
-                return None
-            from openai import OpenAI
-            client = OpenAI()
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": _INTENT_PROMPT.format(
-                    translated=translated_query or original_query,
-                    original=original_query or translated_query,
-                ),
-            }],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        raw = json.loads(resp.choices[0].message.content)
-        if not isinstance(raw, dict):
+    # Ordered (raw_client, model, provider_label) attempts: the configured
+    # provider plus its one-way fallback (perplexity → openai). Each endpoint
+    # gets exactly ONE call here (the existing no-retry policy of this
+    # function); any failure moves to the next candidate, then to the
+    # deterministic entity fallback. Never a loop.
+    attempts: list = []
+    if client is not None:
+        attempts.append((client, model, "sdk"))
+    else:
+        from core.llm_provider import build_provider, resolve_model
+        provider = build_provider()
+        if provider is None:
             return None
-        intent = RWEQueryIntent(
-            interventions=_clean_terms(raw.get("interventions")),
-            outcomes=_clean_terms(raw.get("outcomes")),
-            conditions=_clean_terms(raw.get("conditions")),
-            synonyms={
-                c: _clean_terms(a, _MAX_SYNONYMS)
-                for c, a in (raw.get("synonyms") or {}).items()
-                if _clean_term(c)
-            },
-            relation_type=raw.get("relation_type"),
-        )
-        if not (intent.interventions or intent.outcomes or intent.conditions):
-            return None  # empty extraction is not a usable signal
-        intent.source = "llm"
-        intent.confidence = 1.0
-        return intent
-    except Exception as exc:  # noqa: BLE001 — any failure → deterministic fallback
-        logger.info("QU intent extraction failed (%s); falling back to KB", type(exc).__name__)
-        return None
+        attempts.append((provider.client, resolve_model(provider.name, model), provider.name))
+        if provider.fallback is not None:
+            fb = provider.fallback
+            attempts.append((fb.client, resolve_model(fb.name, model), fb.name))
+    for raw_client, resolved_model, label in attempts:
+        try:
+            kwargs: dict = {
+                "model": resolved_model,
+                "messages": [{
+                    "role": "user",
+                    "content": _INTENT_PROMPT.format(
+                        translated=translated_query or original_query,
+                        original=original_query or translated_query,
+                    ),
+                }],
+                "temperature": 0,
+            }
+            # Perplexity Sonar rejects OpenAI-style json_object; the prompt
+            # already demands a bare JSON object.
+            if label != "perplexity":
+                kwargs["response_format"] = {"type": "json_object"}
+            resp = raw_client.chat.completions.create(**kwargs)
+            raw = json.loads(resp.choices[0].message.content)
+            if not isinstance(raw, dict):
+                continue
+            intent = RWEQueryIntent(
+                interventions=_clean_terms(raw.get("interventions")),
+                outcomes=_clean_terms(raw.get("outcomes")),
+                conditions=_clean_terms(raw.get("conditions")),
+                synonyms={
+                    c: _clean_terms(a, _MAX_SYNONYMS)
+                    for c, a in (raw.get("synonyms") or {}).items()
+                    if _clean_term(c)
+                },
+                relation_type=raw.get("relation_type"),
+            )
+            if not (intent.interventions or intent.outcomes or intent.conditions):
+                return None  # empty extraction is not a usable signal
+            intent.source = "llm"
+            intent.confidence = 1.0
+            return intent
+        except Exception as exc:  # noqa: BLE001 — try next candidate, then KB
+            logger.info("QU intent extraction failed (%s, provider=%s)",
+                        type(exc).__name__, label)
+            continue
+    logger.info("QU intent extraction failed on all providers; falling back to KB")
+    return None
 
 
 def intent_from_entities(entities: list, *query_texts: str) -> RWEQueryIntent:

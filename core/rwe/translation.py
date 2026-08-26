@@ -24,7 +24,6 @@ this chain runs only inside the RWE query engine.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -143,10 +142,10 @@ def translate_for_rwe(
     if not q or (lang or "und").lower() in {"en", "und", ""}:
         return TranslationResult(english_query=q, method="none")
 
-    if client is None and os.getenv("OPENAI_API_KEY"):
+    if client is None:
         try:
-            from openai import OpenAI
-            client = OpenAI()
+            from core.llm_provider import build_provider
+            client = build_provider()
         except Exception as exc:  # noqa: BLE001
             logger.info("RWE translation: no LLM client (%s)", type(exc).__name__)
             client = None

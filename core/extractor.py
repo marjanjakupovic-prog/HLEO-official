@@ -1,4 +1,3 @@
-import os
 import json
 import logging
 
@@ -12,16 +11,13 @@ logger = logging.getLogger(__name__)
 class LLMExtractor:
     def __init__(self) -> None:
         self.model = "gpt-4o"
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
-        else:
+        from core.llm_provider import build_provider
+        self.client = build_provider()
+        if self.client is None:
             logger.warning(
-                "OPENAI_API_KEY not set — LLM extraction disabled. "
-                "Reddit posts will be skipped."
+                "No LLM provider configured (OPENAI_API_KEY / PERPLEXITY_API_KEY) "
+                "— LLM extraction disabled. Reddit posts will be skipped."
             )
-            self.client = None
 
     def extract(self, timeline_json: str):
         if self.client is None:
