@@ -223,3 +223,149 @@ class TestNoNestedMultiplication:
         # 3 outer × 5 inner would be 15 — that's the bug the guard prevents.
         # The guard itself still caps each invocation at 5.
         assert client.chat.completions.create.call_count == 3 * MAX_TOTAL_ATTEMPTS
+
+
+# ── JSON output sanitization (_extract_json) ────────────────────────────────
+
+class TestExtractJson:
+    def test_plain_json(self):
+        from core.llm_guard import _extract_json
+        assert _extract_json('{"a": 1}') == {"a": 1}
+
+    def test_markdown_fence(self):
+        from core.llm_guard import _extract_json
+        assert _extract_json('```json\n{"a": 1}\n```') == {"a": 1}
+
+    def test_prose_wrapped(self):
+        from core.llm_guard import _extract_json
+        raw = 'Sure! Here is the JSON you asked for:\n{"a": {"b": [1, 2]}}\nHope this helps!'
+        assert _extract_json(raw) == {"a": {"b": [1, 2]}}
+
+    def test_braces_inside_strings_are_ignored(self):
+        from core.llm_guard import _extract_json
+        raw = '{"note": "use {curly} braces \\\"quoted\\\"", "v": 2} trailing'
+        assert _extract_json(raw) == {"note": 'use {curly} braces "quoted"', "v": 2}
+
+    def test_invalid_escape_repaired(self):
+        """Vicuna emits LaTeX-style \\_ escapes — invalid JSON. The repair only
+        drops backslashes that are not valid JSON escapes."""
+        from core.llm_guard import _extract_json
+        raw = '{"query\\_original": "x", "agent": {"term": "finasteride"}}'
+        assert _extract_json(raw) == {"query_original": "x", "agent": {"term": "finasteride"}}
+
+    def test_valid_escapes_preserved(self):
+        from core.llm_guard import _extract_json
+        assert _extract_json('{"a": "line\\nbreak \\u0041"}') == {"a": "line\nbreak A"}
+
+    def test_garbage_raises(self):
+        from core.llm_guard import _extract_json
+        with pytest.raises(json.JSONDecodeError):
+            _extract_json("no json here at all")
+
+    def test_empty_raises(self):
+        from core.llm_guard import _extract_json
+        with pytest.raises(json.JSONDecodeError):
+            _extract_json("")
+
+
+# ── Local-first routing + OpenAI fallback ────────────────────────────────────
+
+class TestLocalRouting:
+    @pytest.fixture
+    def local_env(self, monkeypatch):
+        """Enable local routing with a mock local client; reset stats after."""
+        import core.llm_guard as g
+        monkeypatch.setattr(g, "_LOCAL_URL", "http://127.0.0.1:9999/v1")
+        monkeypatch.setattr(g, "_LOCAL_MODEL", "local-model")
+        monkeypatch.setattr(g, "_LOCAL_OPS", None)
+        monkeypatch.setattr(g, "_LOCAL_FALLBACK", True)
+        monkeypatch.setattr("core.llm_guard.time.sleep", lambda d: None)
+        local = _make_client([])
+        monkeypatch.setattr(g, "_get_local_client", lambda: local)
+        g.reset_routing_stats()
+        yield local
+        g.reset_routing_stats()
+
+    def test_routing_off_by_default_uses_caller_client(self, monkeypatch):
+        import core.llm_guard as g
+        monkeypatch.setattr(g, "_LOCAL_URL", "")
+        monkeypatch.setattr("core.llm_guard.time.sleep", lambda d: None)
+        client = _make_client([_choice('{"ok": true}')])
+        out = call_llm_json(client, messages=[{"role": "user", "content": "hi"}],
+                            operation="relational_search_llm")
+        assert out == {"ok": True}
+        assert client.chat.completions.create.call_count == 1
+
+    def test_intermediate_op_routed_to_local(self, local_env):
+        local = local_env
+        local.chat.completions.create.side_effect = [_choice('{"src": "local"}')]
+        openai_client = _make_client([])
+        out = call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                            operation="relational_search_llm")
+        assert out == {"src": "local"}
+        assert local.chat.completions.create.call_count == 1
+        assert openai_client.chat.completions.create.call_count == 0
+        from core.llm_guard import get_routing_stats
+        assert get_routing_stats()["local_calls"] == 1
+
+    def test_final_op_stays_on_openai(self, local_env):
+        local = local_env
+        openai_client = _make_client([_choice('{"src": "openai"}')])
+        out = call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                            operation="scientific_synthesis")
+        assert out == {"src": "openai"}
+        assert local.chat.completions.create.call_count == 0
+
+    def test_fallback_to_openai_on_last_attempt(self, local_env):
+        """Local returns garbage 4x, 5th (last) attempt goes to OpenAI.
+        Total calls stay within the absolute cap of MAX_TOTAL_ATTEMPTS."""
+        local = local_env
+        local.chat.completions.create.side_effect = [_choice("garbage, no json")] * 4
+        openai_client = _make_client([_choice('{"src": "fallback"}')])
+        out = call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                            operation="relational_search_llm")
+        assert out == {"src": "fallback"}
+        assert local.chat.completions.create.call_count == 4
+        assert openai_client.chat.completions.create.call_count == 1
+        total = (local.chat.completions.create.call_count
+                 + openai_client.chat.completions.create.call_count)
+        assert total == MAX_TOTAL_ATTEMPTS  # absolute cap preserved
+        from core.llm_guard import get_routing_stats
+        assert get_routing_stats()["fallbacks"] == 1
+
+    def test_fallback_disabled_fails_after_cap(self, monkeypatch):
+        import core.llm_guard as g
+        monkeypatch.setattr(g, "_LOCAL_URL", "http://127.0.0.1:9999/v1")
+        monkeypatch.setattr(g, "_LOCAL_OPS", None)
+        monkeypatch.setattr(g, "_LOCAL_FALLBACK", False)
+        monkeypatch.setattr("core.llm_guard.time.sleep", lambda d: None)
+        local = _make_client([_choice("garbage")] * 10)
+        monkeypatch.setattr(g, "_get_local_client", lambda: local)
+        openai_client = _make_client([])
+        with pytest.raises(LLMCallError):
+            call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                          operation="relational_search_llm")
+        assert local.chat.completions.create.call_count == MAX_TOTAL_ATTEMPTS
+        assert openai_client.chat.completions.create.call_count == 0
+
+    def test_local_success_no_fallback(self, local_env):
+        """Clean local JSON on attempt 1: OpenAI never touched."""
+        local = local_env
+        local.chat.completions.create.side_effect = [_choice('{"ok": 1}')]
+        openai_client = _make_client([])
+        out = call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                            operation="orchestrator_detect_translate")
+        assert out == {"ok": 1}
+        assert openai_client.chat.completions.create.call_count == 0
+
+    def test_sanitizer_rescues_local_output_without_fallback(self, local_env):
+        """Prose-wrapped local JSON is sanitised: no retry, no fallback."""
+        local = local_env
+        local.chat.completions.create.side_effect = [
+            _choice('Here is the JSON:\n{"ok": 2}\nDone!')]
+        openai_client = _make_client([])
+        out = call_llm_json(openai_client, messages=[{"role": "user", "content": "hi"}],
+                            operation="relational_search_llm")
+        assert out == {"ok": 2}
+        assert local.chat.completions.create.call_count == 1
+        assert openai_client.chat.completions.create.call_count == 0

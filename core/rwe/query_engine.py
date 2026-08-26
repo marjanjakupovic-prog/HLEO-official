@@ -422,12 +422,18 @@ class RWEQueryEngine:
 
     @staticmethod
     def _has_structured_relation(entities: list) -> bool:
-        """True when the query exposes a drug→event relation (an exposure AND
-        a symptom/adverse-effect outcome). Conditions alone (e.g. "hair loss")
-        do NOT count: they are the disease context, not a requested outcome."""
+        """True when the query exposes a drug→event relation: an exposure
+        (drug/active_ingredient) AND an outcome. Outcome sides are resolved
+        provider-first, so a "condition" (e.g. MeSH C12 'Sexual Dysfunction,
+        Physiological') counts as the requested outcome when it is NOT the
+        sole entity — i.e. when a drug anchors the relation. A condition
+        alone (no drug, e.g. "hair loss" entities without an exposure) stays
+        disease context and does NOT open the gate."""
         has_drug = any(t in ("drug", "active_ingredient") for t, _, _ in entities or [])
-        has_outcome = any(t in ("symptom", "adverse_effect") for t, _, _ in entities or [])
-        return has_drug and has_outcome
+        if not has_drug:
+            return False
+        return any(t in ("symptom", "adverse_effect", "condition")
+                   for t, _, _ in entities or [])
 
     # ── Controlled query expansion ───────────────────────────────────────────
 
