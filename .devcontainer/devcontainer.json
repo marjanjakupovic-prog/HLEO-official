@@ -1,0 +1,17 @@
+{
+  "name": "HLEO",
+  "dockerComposeFile": ["../docker-compose.yml", "docker-compose.yml"],
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "bash scripts/setup.sh",
+  "forwardPorts": [8000]
+}

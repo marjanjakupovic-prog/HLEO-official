@@ -1,0 +1,17 @@
+services:
+  # Development service: built from .devcontainer/Dockerfile (Python 3.13),
+  # mounts the workspace and uses the same Postgres "db" service defined in
+  # the root docker-compose.yml.
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    container_name: hleo_devcontainer
+    volumes:
+      - ..:/workspace:cached
+    command: sleep infinity
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-hleo_admin}:${POSTGRES_PASSWORD:-hleo_secure}@db:5432/${POSTGRES_DB:-hleo_db}

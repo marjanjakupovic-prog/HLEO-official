@@ -404,6 +404,161 @@ def _dump_call_log() -> None:
 
 # ── Centralised LLM call ────────────────────────────────────────────────────
 
+def _unwrap_provider(client: Any, model: str):
+    """Return (raw_client, model, provider_name, fallback) when ``client`` is a
+    core.llm_provider.LLMProvider; otherwise None (plain SDK client).
+
+    Duck-typed (no import of core.llm_provider here) to avoid a module cycle
+    and to keep plain OpenAI SDK clients — including the unittest MagicMock
+    stand-ins used by legacy tests — on the legacy path: a raw client exposes
+    ``.chat``, an LLMProvider exposes ``.client`` and has no ``.chat``.
+    """
+    if hasattr(client, "chat") or not hasattr(client, "client"):
+        return None
+    from core.llm_provider import resolve_model
+    provider_name = getattr(client, "name", "openai") or "openai"
+    resolved = resolve_model(provider_name, model)
+    fb = getattr(client, "fallback", None)
+    fallback = None
+    if fb is not None:
+        fallback = (fb.client, resolve_model(fb.name, model))
+    return (client.client, resolved, provider_name, fallback)
+
+
+def _provider_kwargs(provider_name: str, model: str, messages: list,
+                     temperature: float, max_tokens: Optional[int],
+                     response_format: Optional[dict], json_mode: bool) -> dict:
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if provider_name == "perplexity" and kwargs.get("max_tokens") is not None:
+        kwargs["max_tokens"] = max(kwargs["max_tokens"], _PPX_MIN_MAX_TOKENS)
+    # json_mode requests a bare JSON object (guard contract for call_llm_json);
+    # Perplexity rejects response_format json_object → omitted there.
+    if json_mode:
+        if provider_name != "perplexity":
+            kwargs["response_format"] = {"type": "json_object"}
+    elif response_format is not None:
+        if provider_name == "perplexity" and response_format.get("type") == "json_object":
+            pass
+        else:
+            kwargs["response_format"] = response_format
+    return kwargs
+
+
+def _run_provider_loop(*, operation: str, raw_client: Any, model: str,
+                       provider_name: str, fallback: Optional[tuple],
+                       messages: list, temperature: float,
+                       max_tokens: Optional[int], response_format: Optional[dict],
+                       json_mode: bool):
+    """Execute an LLMProvider call with the one-way fallback chain defined in
+    core.llm_provider: primary → optional fallback, never back to primary.
+
+    Each stage gets its own bounded retry budget (MAX_TOTAL_ATTEMPTS). A
+    ``quota_exhausted`` error on the primary short-circuits to the fallback
+    immediately; non-quota exhaustion consumes the stage budget before
+    switching. Total attempts are bounded by stages × MAX_TOTAL_ATTEMPTS —
+    the documented provider contract, not a duplicated retry layer.
+    """
+    stages: list = [(raw_client, model, provider_name)]
+    if fallback is not None:
+        fb_client, fb_model = fallback
+        if fb_client is not None:
+            stages.append((fb_client, fb_model, "openai"))
+
+    last_exc: Optional[Exception] = None
+    last_kind: str = "other"
+
+    for stage_idx, (stage_client, stage_model, stage_provider) in enumerate(stages):
+        is_last_stage = stage_idx == len(stages) - 1
+        for attempt in range(MAX_TOTAL_ATTEMPTS):
+            active_client, active_model, active_provider = stage_client, stage_model, stage_provider
+            try:
+                kwargs = _provider_kwargs(
+                    active_provider, active_model, messages, temperature,
+                    max_tokens, response_format, json_mode,
+                )
+                if active_provider == "local":
+                    _ROUTING_STATS["local_calls"] += 1
+                else:
+                    _ROUTING_STATS["openai_calls"] += 1
+                t0 = time.perf_counter()
+                resp = active_client.chat.completions.create(**kwargs)
+                _record_call(operation, active_provider, active_model,
+                             latency_s=time.perf_counter() - t0, resp=resp,
+                             fallback=stage_idx > 0)
+                raw = resp.choices[0].message.content
+                if raw is None:
+                    raise ValueError("LLM returned null content.")
+                if json_mode:
+                    return _extract_json(raw)
+                return raw
+
+            except json.JSONDecodeError as exc:
+                last_exc = exc
+                _record_call(operation, active_provider, active_model,
+                             latency_s=0.0, error=f"json_decode: {exc}",
+                             fallback=stage_idx > 0)
+                last_kind = "schema"
+                remaining = MAX_TOTAL_ATTEMPTS - attempt - 1
+                if remaining <= 0:
+                    break
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "%s: JSON parse error on attempt %d/%d — retrying in %.1fs. %s",
+                    operation, attempt + 1, MAX_TOTAL_ATTEMPTS, delay, str(exc)[:160],
+                )
+                time.sleep(delay)
+                continue
+
+            except Exception as exc:  # noqa: BLE001 — classify then decide
+                last_exc = exc
+                msg = _extract_openai_message(exc)
+                if not isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    _record_call(operation, active_provider, active_model,
+                                 latency_s=0.0, error=msg,
+                                 fallback=stage_idx > 0)
+                kind = classify_429(msg)
+                if kind == "quota_exhausted":
+                    if is_last_stage:
+                        raise QuotaExhaustedError(
+                            f"OpenAI credit/quota exhausted — API calls disabled. ({msg})"
+                        ) from exc
+                    # Primary quota → switch to fallback immediately, no retry.
+                    logger.error(
+                        "%s: %s quota exhausted — switching to fallback provider. %s",
+                        operation, active_provider, msg,
+                    )
+                    _ROUTING_STATS["fallbacks"] += 1
+                    break
+                last_kind = kind
+                remaining = MAX_TOTAL_ATTEMPTS - attempt - 1
+                if remaining <= 0:
+                    if not is_last_stage:
+                        _ROUTING_STATS["fallbacks"] += 1
+                        logger.warning(
+                            "%s: %s exhausted after %d attempts — switching to fallback provider.",
+                            operation, active_provider, MAX_TOTAL_ATTEMPTS,
+                        )
+                    break
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "%s: attempt %d/%d failed (%s) — retrying in %.1fs. %s",
+                    operation, attempt + 1, MAX_TOTAL_ATTEMPTS, kind, delay,
+                    msg[:160],
+                )
+                time.sleep(delay)
+
+    raise LLMCallError(
+        f"{operation} failed after {MAX_TOTAL_ATTEMPTS} attempts per provider "
+        f"(last kind={last_kind}): {last_exc}"
+    ) from last_exc
+
+
 def call_llm(
     client: Any,
     *,
@@ -425,6 +580,19 @@ def call_llm(
     """
     if json_mode and response_format is None:
         response_format = {"type": "json_object"}
+
+    # LLMProvider (core.llm_provider) path: unwrap to the raw SDK client and
+    # honour the one-way fallback chain + resolve_model mapping. A plain SDK
+    # client (has .chat) stays on the legacy routing below unchanged.
+    provider = _unwrap_provider(client, model)
+    if provider is not None:
+        raw_client, resolved_model, provider_name, fallback = provider
+        return _run_provider_loop(
+            operation=operation, raw_client=raw_client, model=resolved_model,
+            provider_name=provider_name, fallback=fallback, messages=messages,
+            temperature=temperature, max_tokens=max_tokens,
+            response_format=response_format, json_mode=json_mode,
+        )
 
     client, model, fb_client, fb_model, route_name = _route(operation, client, model)
     is_final = False
@@ -548,6 +716,19 @@ def call_llm_json(
     if route_name is None:
         client, model, fb_client, fb_model, route_name, is_final = _route_ppx(
             operation, client, model)
+
+    # LLMProvider (core.llm_provider) path: unwrap to the raw SDK client and
+    # honour the one-way fallback chain + resolve_model mapping. A plain SDK
+    # client (has .chat) stays on the legacy routing below unchanged.
+    provider = _unwrap_provider(client, model)
+    if provider is not None:
+        raw_client, resolved_model, provider_name, fallback = provider
+        return _run_provider_loop(
+            operation=operation, raw_client=raw_client, model=resolved_model,
+            provider_name=provider_name, fallback=fallback, messages=messages,
+            temperature=temperature, max_tokens=max_tokens,
+            response_format=None, json_mode=True,
+        )
 
     last_exc: Optional[Exception] = None
     last_raw: str = ""
